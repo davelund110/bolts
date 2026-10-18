@@ -32,6 +32,7 @@ This details the exact format of on-chain transactions, which both sides need to
         * [`remotepubkey` Derivation](#remotepubkey-derivation)
         * [`revocationpubkey` Derivation](#revocationpubkey-derivation)
         * [Per-commitment Secret Requirements](#per-commitment-secret-requirements)
+        * [Independent Per-commitment Secrets](#independent-per-commitment-secrets)
     * [Efficient Per-commitment Secret Storage](#efficient-per-commitment-secret-storage)
   * [Appendix A: Expected Weights](#appendix-a-expected-weights)
       * [Expected Weight of the Funding Transaction (v2 Channel Establishment)](#expected-weight-of-the-funding-transaction-v2-channel-establishment)
@@ -946,6 +947,179 @@ byte of the value.  So, "flip(0) in e3b0..." is "e2b0...", and
 The receiving node:
   - MAY store all previous per-commitment secrets.
   - MAY calculate them from a compact representation, as described below.
+
+On a channel with `option_independent_secrets`, the requirements above on the
+first secret, on the I'th secret and on the receiving node are replaced by
+those in
+[Independent Per-commitment Secrets](#independent-per-commitment-secrets), and
+the requirements on the seed apply only to a node that generates its secrets
+with the algorithm above.
+
+### Independent Per-commitment Secrets
+
+With `option_independent_secrets` in `channel_type`, a channel's per-commitment
+secrets are not required to come from a single seed. Each side may generate its
+secrets by any method, and each side keeps every secret it receives. The
+per-commitment secret of commitment number `n` still corresponds to index
+`2^48 - 1 - n`, the index under which the compact representation stores it,
+and the commitment number is still 48 bits.
+
+The even bit, 266, is only used in `channel_type`.
+
+A node:
+  - MUST NOT set bit 266 in `init` or `node_announcement`.
+  - SHOULD set bit 267 in `init` and `node_announcement`, so that a peer that
+    generates its secrets jointly can open channels with it.
+  - if both peers set `option_independent_secrets`:
+    - SHOULD include it in the `channel_type` it proposes, so that a peer that
+      does not generate its per-commitment secrets with the algorithm above can
+      accept the channel.
+    - MUST accept a `channel_type` that adds `option_independent_secrets` to a
+      `channel_type` it would otherwise accept.
+
+Each per-commitment point is still `per_commitment_secret * G`, however the
+secret was generated. This applies to every per-commitment point a node sends:
+`first_per_commitment_point` in `open_channel`, `accept_channel`,
+`open_channel2` and `accept_channel2`; `second_per_commitment_point` in
+`channel_ready`, `open_channel2` and `accept_channel2`;
+`next_per_commitment_point` in `revoke_and_ack`; and
+`my_current_per_commitment_point` in `channel_reestablish`.
+
+For a channel whose per-commitment secrets a node will not generate with the
+algorithm above, that node:
+  - MUST include `option_independent_secrets` in the `channel_type` of the
+    `open_channel` or `open_channel2` it sends, since that message already
+    carries its first per-commitment point.
+  - MUST NOT accept the channel if its `channel_type` does not include
+    `option_independent_secrets`.
+
+A node generating its per-commitment secrets on a channel with
+`option_independent_secrets`:
+  - MAY generate them by any method, including:
+    - the algorithm above.
+    - a key derivation function applied to a private seed and the commitment
+      number.
+    - a cryptographically secure random number generator.
+    - a threshold protocol run by several signers.
+  - MUST generate each per-commitment secret such that its peer cannot guess
+    it, including from any secrets it has already revealed.
+  - MUST generate each per-commitment secret as a valid secp256k1 secret key.
+  - MUST NOT use the same per-commitment secret for two commitment
+    transactions.
+  - MUST be able to reveal the per-commitment secret for every per-commitment
+    point it has sent, including after a restart: for example, by persisting
+    the secret, or whatever its signers need to reveal it jointly, before it
+    sends the point.
+  - MUST be able to check `your_last_per_commitment_secret` in
+    `channel_reestablish` against the last per-commitment secret it revealed.
+  - SHOULD be able to check it for any commitment number it may have reached,
+    including after being restored from an old backup. It MAY do so by
+    checking that the secret generates the per-commitment point of that
+    commitment number, rather than by producing the secret.
+
+A node receiving per-commitment secrets on a channel with
+`option_independent_secrets`:
+  - MUST NOT require that the per-commitment secrets it receives are related
+    to each other in any way.
+  - MUST keep each per-commitment secret it receives, so that it can produce
+    the secret of every commitment transaction its peer has revoked, until
+    every funding output that such a commitment transaction could spend has
+    been spent irrevocably (after a splice there can be more than one) and, if
+    a revoked commitment transaction spent one, until every output of that
+    transaction, and of any HTLC transaction that spends it, has been
+    irrevocably resolved.
+  - MAY store per-commitment secrets in the compact representation of
+    [Efficient Per-commitment Secret Storage](#efficient-per-commitment-secret-storage),
+    for as long as each one it receives can be inserted into it:
+    - otherwise, MUST store that secret, and every later one, individually,
+      together with the number of the commitment transaction it revokes.
+  - if the channel has more than one funding output, for example while a
+    splice is pending:
+    - MUST be able to use each secret against the commitment transaction
+      with that number on every funding output, since one secret revokes all
+      of them: a receiver that stores revoked commitments per funding output
+      MUST make the secret reachable from each.
+  - MAY set a limit on the number of secrets it stores individually for a
+    channel. Once it reaches it:
+    - SHOULD close the channel mutually.
+    - MAY fail the channel if its peer goes on revoking commitment
+      transactions after that.
+
+`option_independent_secrets` MAY be combined with the simple taproot channel
+types of [bolt-simple-taproot.md](bolt-simple-taproot.md); their
+per-commitment secrets follow the requirements above. That document also
+recommends deriving each MuSig2 verification nonce from a second shachain,
+seeded from the root of the revocation secrets. That scheme is local to the
+node: its peer never sees the secret nonces and does not check how they were
+made.
+
+A node whose signing keys are held by several signers:
+  - MUST NOT derive its MuSig2 secret nonces from a seed that any single
+    signer holds.
+  - MUST persist each verification nonce it sends, or whatever its signers
+    need to reproduce it, before sending it, as that document already requires
+    of nonces not made with its counter-based scheme.
+
+#### Rationale
+
+The seed-based algorithm lets a receiver keep every secret in 49 entries, but
+it ties all of a node's secrets to one value. The seed cannot be split across
+several signers with elliptic curve arithmetic, because each derivation step is
+SHA256, so a node that wants its signing keys held k-of-n still has to give the
+whole seed to every signer that may need to revoke a commitment. Any one of
+those signers can then give the seed to the channel peer, who learns the secret
+of the node's current commitment and can claim its outputs through the
+revocation path as soon as the node broadcasts it. Independent secrets let a
+node generate each secret jointly, with no signer ever holding it, and reveal
+it only once enough signers agree that the commitment is revoked.
+
+The cost falls on the receiver, which stores a 32-byte secret per revoked
+commitment, with its commitment number, instead of a fixed 49 entries: about
+32 MB of secrets for a million updates, plus each implementation's per-record
+overhead. It is paid only on channels that use the option, and a peer can keep
+a channel updating even after `shutdown` (with `update_fee`, which needs no
+HTLCs), hence the limit a receiver may set. Some implementations already keep
+per-commitment data for every revoked state (lnd's revocation log, for
+example), and for them the secret adds a few dozen bytes to a record that
+exists anyway. A watchtower that stores a penalty per revoked state needs no
+change.
+
+Secrets from the seed-based algorithm can all be inserted into the compact
+representation, so a receiver can keep its fixed size for as long as they keep
+coming that way, and a single-signer peer that keeps using the algorithm costs
+it nothing. Insertion checks each secret against the ones before it, so the
+first secret that cannot be inserted shows that the sender is not using the
+algorithm, and every secret inserted before it can still be produced. That
+secret and every later one have to be stored individually. A static backup that
+carries the compact representation can therefore still punish any state
+revoked by a seed-based peer, but none whose secret had to be stored
+individually.
+
+A node that restarts from an old backup relies on
+`your_last_per_commitment_secret` to learn that its peer has seen a later
+state, and so that it must not broadcast its own commitment transaction. With
+the seed-based algorithm it can always check that secret. A node using another
+method may not be able to, in which case the
+[`channel_reestablish` requirements](02-peer-protocol.md#message-retransmission)
+have it treat the claim as a sign of lost data rather than broadcast. A peer
+could then make a false claim and keep the channel open, but it can do
+that by not reconnecting at all.
+
+The option is a `channel_type` add-on rather than a node-wide flag, so it is
+agreed per channel, and a channel's rules never change after it opens. Feature
+bits below 256 are reserved for the BOLTs of the main network, so this one is
+266/267. That costs nothing in `init` and `node_announcement`, which already
+carry bit 512, nor in a `channel_type` with `option_unified_sigs` (bit 514).
+
+Taproot channels need no change to the messages, but they need care inside a
+multi-signer node. A signer that knows another signer's secret nonce, and sees
+that signer's partial signature, can compute that signer's key share. Nonces
+derived from a seed that one signer holds would therefore hand that signer the
+other shares, the same weakness the shachain has for revocation secrets.
+
+The idea was first proposed by ZmnSCPxj on Delving Bitcoin as
+`no_more_shachains` (option 2A in his
+[summary of the options for a k-of-n node](https://delvingbitcoin.org/t/towards-a-k-of-n-lightning-network-node/2395)).
 
 ## Efficient Per-commitment Secret Storage
 
