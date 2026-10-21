@@ -3613,7 +3613,9 @@ A node:
   - if `option_independent_secrets` applies to the channel, AND
     `next_revocation_number` is greater than expected above, AND it cannot
     check whether `your_last_per_commitment_secret` is correct for that
-    `next_revocation_number` minus 1:
+    `next_revocation_number` minus 1 (which a node meeting the requirements of
+    [BOLT #3](03-transactions.md#independent-per-commitment-secrets) only
+    faces after losing the means to check, such as a signer's share):
     - MUST NOT broadcast its commitment transaction.
     - SHOULD send an `error` to request the peer to fail the channel.
   - otherwise:
