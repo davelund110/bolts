@@ -43,6 +43,7 @@ This details the exact format of on-chain transactions, which both sides need to
   * [Appendix D: Per-commitment Secret Generation Test Vectors](#appendix-d-per-commitment-secret-generation-test-vectors)
     * [Generation Tests](#generation-tests)
     * [Storage Tests](#storage-tests)
+    * [Independent Secrets Storage Tests](#independent-secrets-storage-tests)
   * [Appendix E: Key Derivation Test Vectors](#appendix-e-key-derivation-test-vectors)
   * [Appendix F: Commitment and HTLC Transaction Test Vectors (anchors)](#appendix-f-commitment-and-htlc-transaction-test-vectors-anchors)
   * [Appendix G: Dual Funded Transaction Test Vectors](#appendix-g-dual-funded-transaction-test-vectors)
@@ -986,13 +987,18 @@ A node receiving `init`:
   - if bit 266 is set:
     - MUST close the connection.
 
+A node receiving `node_announcement`:
+  - if bit 266 is set:
+    - MUST treat it as an unknown even bit, as
+      [BOLT #7](07-routing-gossip.md#the-node_announcement-message) describes:
+      SHOULD NOT connect to the node, and MUST NOT route a payment through it.
+
 Each per-commitment point is still `per_commitment_secret * G`, however the
 secret was generated. This applies to every per-commitment point a node sends:
 `first_per_commitment_point` in `open_channel`, `accept_channel`,
 `open_channel2` and `accept_channel2`; `second_per_commitment_point` in
-`channel_ready`, `open_channel2` and `accept_channel2`;
-`next_per_commitment_point` in `revoke_and_ack`; and
-`my_current_per_commitment_point` in `channel_reestablish`.
+`channel_ready`, `open_channel2` and `accept_channel2`; and
+`next_per_commitment_point` in `revoke_and_ack`.
 
 For a channel whose per-commitment secrets a node will not generate with the
 algorithm above, that node:
@@ -1023,10 +1029,12 @@ A node generating its per-commitment secrets on a channel with
     the secret, or whatever its signers need to reveal it jointly, before it
     sends the point.
   - MUST be able to check `your_last_per_commitment_secret` in
-    `channel_reestablish` for any commitment number it may have reached,
-    including after being restored from an old backup. It MAY do so by
-    checking that the secret generates the per-commitment point of that
-    commitment number, rather than by producing the secret.
+    `channel_reestablish` for any commitment number, including after being
+    restored from an old backup. It MAY do so by checking that the secret
+    generates the per-commitment point of that commitment number, rather than
+    by producing the secret. A node that keeps its secrets in storage a
+    restore cannot roll back treats a commitment number with no record there
+    as one it has not reached, and the secret claimed for it as incorrect.
   - SHOULD keep whatever it needs to reveal and check its secrets at least as
     recoverable as its funding key: for example, a node whose signers each
     hold a share of what generates its secrets SHOULD back up those shares
@@ -1057,8 +1065,9 @@ A node receiving per-commitment secrets on a channel with
       with that number on every funding output, since one secret revokes all
       of them: a receiver that stores revoked commitments per funding output
       MUST make the secret reachable from each.
-  - MAY set a limit on the number of secrets it stores individually for a
-    channel. If it does:
+  - MAY set a limit on the number of revocations it accepts on the channel
+    whose secrets it has to store individually. It MUST still keep every
+    secret it accepts. If it sets one:
     - SHOULD NOT set it below 1,000,000.
     - once it reaches the limit:
       - SHOULD close the channel mutually.
@@ -1077,7 +1086,9 @@ seeded from the root of the revocation secrets. That scheme is local to the
 node: its peer never sees the secret nonces and does not check how they were
 made.
 
-A node whose signing keys are held by several signers:
+For a node whose signing keys are held by several signers, the requirements
+below replace that document's use of `NonceGen` from the `musig2` BIP, which
+assumes that one signer generates the whole secret nonce. Such a node:
   - MUST produce each of its MuSig2 partial signatures such that no single
     signer learns the node's secret nonce or another signer's key share. This
     document does not specify how: a threshold signing scheme in the style
@@ -1137,9 +1148,10 @@ the seed-based algorithm it can always check that secret. A node that could
 not check it would have to treat every such claim as a sign of lost data: a
 peer could then claim a later state with a made-up secret, leave the node
 unable to close the channel on its own, and ask for a payment to close it.
-Hence a node must be able to check the claim for any commitment number it may
-have reached, by computing the secret or its point again, or by reading it
-from storage that a restore cannot roll back. The
+Hence a node must be able to check the claim for any commitment number: by
+computing the secret or its point again, or, if it generated random secrets, by
+reading it from storage that a restore cannot roll back, where a number with
+no record is one it has not reached. The
 [`channel_reestablish` requirements](02-peer-protocol.md#message-retransmission)
 keep a rule for a node that cannot check only as a last resort, for one that
 has lost the means to, and that rule protects its funds from a penalty at the
@@ -1153,7 +1165,17 @@ bits below 256 are reserved for the BOLTs of the main network, so this one is
 carry bit 512, nor in a `channel_type` with `option_unified_sigs` (bit 514).
 The even bit is only meaningful in `channel_type`; a node that sets it in
 `init` is not following this document, so its peer closes the connection
-rather than guess what it meant.
+rather than guess what it meant, and one that sets it in `node_announcement`
+is treated like a node with an even bit its peers do not know. Like
+`zero_fee_commitments`, the option depends on `option_channel_type`, because
+it is only ever agreed in `channel_type`.
+
+An implementation may leave bit 267 off by default at first, even for a node
+whose secrets come from the seed: the receiver pays for storing secrets one by
+one, and an implementation may want its users to be able to go back to a
+release that cannot read what the option stores. Each node that leaves it off
+is one that a multi-signer node cannot open a channel with, so the default
+should change once those reasons have passed.
 
 Taproot channels need no change to the messages, but they need care inside a
 multi-signer node. A signer that knows another signer's secret nonce, and sees
@@ -2267,6 +2289,12 @@ per-commitment point, and `stored` where the receiver keeps it: `compact`, or
 `individual` once a secret has failed to insert. Every secret stays
 retrievable by its commitment number.
 
+In the second test, the secret for `n: 1` comes from the seed of the storage
+tests but the secret for `n: 0` does not, so inserting the secret for `n: 1`
+fails: it derives a different secret for `n: 0` from the one already stored.
+From then on the receiver stores every secret individually, and does not offer
+the secret for `n: 2` to the compact representation.
+
     name: a seed-based peer fits the compact representation throughout
 	n: 0
 	I: 281474976710655
@@ -2291,13 +2319,11 @@ retrievable by its commitment number.
 	I: 281474976710654
 	secret: 0xc7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964
 	point: 0x032405cbd0f41225d5f203fe4adac8401321a9e05767c5f8af97d51d2e81fbb206
-	# insert_secret returns an error: it does not derive the secret for n: 0
 	stored: individual
 	n: 2
 	I: 281474976710653
 	secret: 0x2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8
 	point: 0x03bca7c4ebe7eb7e8e40b8c2a7b4dde7f4d48404c9a62859d09fe2d00151af40ad
-	# not offered to the compact representation, which can take no more
 	stored: individual
 	retrieve n: 0
 	output: 0x02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148

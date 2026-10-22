@@ -3619,7 +3619,9 @@ A node:
     - MUST NOT broadcast its commitment transaction.
     - SHOULD send an `error` to request the peer to fail the channel.
   - otherwise:
-    - if `your_last_per_commitment_secret` does not match the expected values:
+    - if it can check `your_last_per_commitment_secret` (which it always can
+      without `option_independent_secrets`), and it does not match the
+      expected values:
       - SHOULD send an `error` and fail the channel.
 
 A receiving node:
