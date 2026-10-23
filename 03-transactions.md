@@ -993,7 +993,10 @@ A node receiving `node_announcement`:
   - if bit 266 is set:
     - MUST treat it as an unknown even bit, as
       [BOLT #7](07-routing-gossip.md#the-node_announcement-message) describes:
-      SHOULD NOT connect to the node, and MUST NOT route a payment through it.
+      - SHOULD NOT connect to the node.
+      - Unless paying a [BOLT #11](11-payment-encoding.md) invoice which does
+        not have bit 266 set, MUST NOT attempt to send payments _to_ the node.
+      - MUST NOT route a payment _through_ the node.
 
 Each per-commitment point is still `per_commitment_secret * G`, however the
 secret was generated. This applies to every per-commitment point a node sends:
@@ -1112,8 +1115,9 @@ the [unified signature hash](#unified-signature-hash), and BOLT 2 requires
 `option_unified_sigs` on new channels, so such a channel cannot be opened yet.
 
 For a node whose signing keys are held by several signers, the requirements
-below replace that document's use of `NonceGen` from the `musig2` BIP, which
-assumes that one signer generates the whole secret nonce. Such a node:
+below replace that document's use of `NonceGen` and `Sign` from the `musig2`
+BIP, which assume that one signer holds the whole secret nonce and secret key.
+Such a node:
   - MUST produce each of its MuSig2 partial signatures such that no single
     signer learns the node's secret nonce or another signer's key share. This
     document does not specify how: a threshold signing scheme in the style
@@ -2345,14 +2349,17 @@ the secret for `n: 2` to the compact representation.
 	n: 0
 	I: 281474976710655
 	secret: 0x7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc
+	point: 0x0288a618cb6027c3218a37cbe9e882379f17d87d03f6e99d0b60292478d2aded06
 	stored: compact
 	n: 1
 	I: 281474976710654
 	secret: 0xc7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964
+	point: 0x032405cbd0f41225d5f203fe4adac8401321a9e05767c5f8af97d51d2e81fbb206
 	stored: compact
 	n: 2
 	I: 281474976710653
 	secret: 0x2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8
+	point: 0x03bca7c4ebe7eb7e8e40b8c2a7b4dde7f4d48404c9a62859d09fe2d00151af40ad
 	stored: compact
 
     name: the first secret that does not fit, and every later one, are stored individually
