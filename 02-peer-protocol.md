@@ -816,8 +816,8 @@ The currently defined basic types are:
 Each basic type has the following variations allowed:
   - `option_scid_alias` (bit 46)
   - `option_zeroconf` (bit 50)
-  - `option_unified_sigs` (bit 514)
   - `option_independent_secrets` (bit 266)
+  - `option_unified_sigs` (bit 514)
 
 #### Requirements
 
@@ -3615,7 +3615,9 @@ A node:
       check whether `your_last_per_commitment_secret` is correct:
       - if it cannot check only for now (for example, while some of its
         signers are unreachable):
-        - MUST NOT fail the channel, or send an `error`, because of it.
+        - MUST NOT broadcast its commitment transaction, fail the channel,
+          or send an `error`, for any reason (including the
+          `next_revocation_number` requirements above), until it can check.
         - SHOULD close the connection, and reconnect once it can check.
       - otherwise, if `next_revocation_number` is greater than expected
         above (a node meeting the requirements of
@@ -3624,6 +3626,9 @@ A node:
         signer's share):
         - MUST NOT broadcast its commitment transaction.
         - SHOULD send an `error` to request the peer to fail the channel.
+      - otherwise:
+        - SHOULD send an `error` and fail the channel, since it can no
+          longer reveal its per-commitment secrets either.
     - otherwise, if `your_last_per_commitment_secret` does not match the
       expected values:
       - SHOULD send an `error` and fail the channel.
