@@ -269,6 +269,13 @@ same digest, but `SIGHASH_DEFAULT` allows us to save a byte for any signature,
 as omitting the explicit sighash byte denotes that the default signing
 algorithm was used.
 
+With `option_unified_sigs` the SHOULD above does not apply: the signature
+hashes in this document, BIP 341's or BIP 342's, are instead the unified
+signature hash, and a signature that would be `SIGHASH_DEFAULT` is made with
+`SIGHASH_ALL` and the opt-in, `0x21`, except where
+[BOLT #3](03-transactions.md#simple-taproot-channels) allows otherwise. BOLT 3
+gives the hash type of each signature.
+
 ### MuSig2 & Associated Changes
 
 Musig2 is a multi-signature scheme based on schnorr signatures. It allows N
@@ -552,6 +559,11 @@ The Context column decodes as follows:
 
 The `option_simple_taproot` feature bit also becomes a defined channel type
 feature bit for explicit channel negotiation.
+
+`option_unified_sigs` (bit 514) is an allowed variation of the
+`option_simple_taproot` channel type, and of `option_simple_taproot_staging`
+where that is used as a channel type, as defined in
+[BOLT #3](03-transactions.md#simple-taproot-channels).
 
 It's important to note that given the early version of this channel type
 _cannot_ be announced on the public network (gossip protocol changes are
@@ -1080,6 +1092,10 @@ The sender:
       the received 64 bytes when assembling the witness of the second level
       transaction.
 
+    - With `option_unified_sigs`, the sighash type is `0xa3` in place of
+      `0x83`, both when signing and when appending the byte (see
+      [BOLT #3](03-transactions.md#simple-taproot-channels)).
+
 
 The recipient:
 
@@ -1447,8 +1463,11 @@ multi-spend going to a CLTV delayed output. Like the normal HTLC transactions,
 we also place the revocation key as the internal key, allowing easy breach
 sweeps with each party only retaining the specific script root.
 
-An HTLC-Success or HTLC-Timeout is a one-in-one-out transaction signed using
-the `SIGHASH_SINGLE|SIGHASH_ANYONECANPAY` flag. These transactions always have
+An HTLC-Success or HTLC-Timeout is a one-in-one-out transaction whose
+signature from the peer uses the `SIGHASH_SINGLE|SIGHASH_ANYONECANPAY` flag;
+the broadcaster's own signature uses `SIGHASH_DEFAULT`, or `0x21` with
+`option_unified_sigs` (see
+[BOLT #3](03-transactions.md#simple-taproot-channels)). These transactions always have
 _zero_ fees attached, forcing them to be aggregated with each other and a
 change input.
 

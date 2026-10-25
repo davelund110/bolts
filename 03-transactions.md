@@ -18,6 +18,9 @@ This details the exact format of on-chain transactions, which both sides need to
           * [Received HTLC Outputs](#received-htlc-outputs)
         * [Trimmed Outputs](#trimmed-outputs)
     * [HTLC-timeout and HTLC-success Transactions](#htlc-timeout-and-htlc-success-transactions)
+    * [Unified signature hash](#unified-signature-hash)
+        * [Spends only this node signs](#spends-only-this-node-signs)
+        * [Simple taproot channels](#simple-taproot-channels)
     * [Legacy Closing Transaction](#legacy-closing-transaction)
 	* [Closing Transaction](#closing-transaction)
     * [Fees](#fees)
@@ -36,6 +39,7 @@ This details the exact format of on-chain transactions, which both sides need to
   * [Appendix A: Expected Weights](#appendix-a-expected-weights)
       * [Expected Weight of the Funding Transaction (v2 Channel Establishment)](#expected-weight-of-the-funding-transaction-v2-channel-establishment)
       * [Expected Weight of the Commitment Transaction](#expected-weight-of-the-commitment-transaction)
+        * [Simple Taproot Commitment Transaction](#simple-taproot-commitment-transaction)
       * [Expected Weight of HTLC-timeout and HTLC-success Transactions](#expected-weight-of-htlc-timeout-and-htlc-success-transactions)
   * [Appendix B: Funding Transaction Test Vectors](#appendix-b-funding-transaction-test-vectors)
   * [Appendix C: Commitment and HTLC Transaction Test Vectors](#appendix-c-commitment-and-htlc-transaction-test-vectors)
@@ -428,6 +432,9 @@ A node signing for a channel with `option_unified_sigs`:
     [BOLT #2](02-peer-protocol.md#the-tx_signatures-message), falls on the
     signer alone.
 
+For the simple taproot channel types, see
+[Simple taproot channels](#simple-taproot-channels).
+
 ### Spends only this node signs
 
 The justice transaction handed to a watchtower, and the sweep of a second-level
@@ -472,6 +479,282 @@ well as what descends from it, for every funder able to sign that way.
 does not exist without those rules. That dependency is between feature vectors:
 a `channel_type` carries `option_unified_sigs` alone, since which rules a node
 follows is a property of the node rather than of one of its channels.
+
+### Simple taproot channels
+
+`option_unified_sigs` is an allowed variation of the `option_simple_taproot`
+channel type of [bolt-simple-taproot.md](bolt-simple-taproot.md), and of
+`option_simple_taproot_staging` where that is used as a channel type. A node
+MUST NOT combine `option_unified_sigs` with any other channel type built on
+MuSig2.
+
+The requirements above apply to these channel types, with one difference. They
+sign under `SIGHASH_DEFAULT` wherever they can, and a taproot signature under
+`SIGHASH_DEFAULT` has no hash type byte. The unified signature hash accepts
+`SIGHASH_UNIFIED` on a taproot key-path or tapscript spend only together with
+`SIGHASH_ALL`, `SIGHASH_NONE` or `SIGHASH_SINGLE`, with or without
+`SIGHASH_ANYONECANPAY`. So a signature that would otherwise be
+`SIGHASH_DEFAULT` is made as `SIGHASH_ALL` with the opt-in, `0x21`, and carries
+the byte.
+
+A simple taproot channel type counts as one where `option_anchors` applies,
+for every requirement in this document and in [BOLT #2](02-peer-protocol.md)
+that depends on it. It inherits the anchor output semantics, as
+[bolt-simple-taproot.md](bolt-simple-taproot.md) says, so its HTLC
+transactions carry zero fee and the funder pays for both anchor outputs and
+keeps them above its reserve.
+
+A node signing for a simple taproot channel with `option_unified_sigs`:
+  - MUST sign each MuSig2 spend of the funding output with `0x21`, over the
+    unified signature hash for a taproot key-path spend. These are the
+    commitment transaction, including the first one exchanged while funding,
+    and the closing transaction.
+    - MUST compute each partial signature over that signature hash.
+    - MUST place the aggregated signature in the witness as 65 bytes: the
+      64-byte signature followed by `0x21`.
+  - MUST sign the HTLC-success and HTLC-timeout transactions over the unified
+    signature hash for a tapscript spend: the signature sent to the peer in
+    `commitment_signed` with `0xa3`, and the one it makes for itself as the
+    broadcaster with `0x21`.
+    - MUST still send each HTLC signature in `htlc_signature` as 64 bytes,
+      without the hash type byte. The broadcaster appends `0xa3` to the
+      peer's signature, and `0x21` to its own, when it builds the witness.
+  - MUST sign a spend that no peer verifies, such as the sweep of a commitment
+    or HTLC output, with `SIGHASH_UNIFIED` added to the hash type it would
+    otherwise use, and `0x21` in place of `SIGHASH_DEFAULT`, except as
+    [Spends only this node signs](#spends-only-this-node-signs) allows: where
+    the signature's container holds 64 bytes, such as the justice transaction
+    handed to a watchtower, it MAY sign under `SIGHASH_DEFAULT`.
+
+A node receiving a signature for such a channel:
+  - MUST verify it over the unified signature hash with the hash type above: a
+    partial signature with `PartialSigVerifyInternal`, as
+    [bolt-simple-taproot.md](bolt-simple-taproot.md) does, and an HTLC
+    signature as a BIP 340 signature.
+  - MUST treat a signature that does not verify as
+    [BOLT #2](02-peer-protocol.md) and
+    [bolt-simple-taproot.md](bolt-simple-taproot.md) require for the message
+    that carried it.
+
+Splicing is not defined for these channel types under `option_unified_sigs`:
+the `shared_input_signature` of [BOLT #2](02-peer-protocol.md) is an ECDSA
+signature. For a simple taproot channel with `option_unified_sigs`, a node:
+  - MUST NOT send `splice_init`.
+  - MUST respond to `splice_init` with `tx_abort`.
+
+#### Expected weight
+
+Each MuSig2 spend of the funding output gains one witness byte, since its
+signature is 65 bytes rather than 64. The expected weight of the commitment
+transaction of a simple taproot channel is `968 + 172 *
+num-untrimmed-htlc-outputs`, and `969 + 172 * num-untrimmed-htlc-outputs`
+with `option_unified_sigs`, as computed in
+[Appendix A](#simple-taproot-commitment-transaction).
+[Fee Calculation](#fee-calculation) uses it for the base fee, and so does
+every requirement in [BOLT #2](02-peer-protocol.md) that depends on that fee.
+
+Other weights grow by the same byte for each signature that loses
+`SIGHASH_DEFAULT`, but no two peers compute an amount from them: the
+broadcaster's own signature in an HTLC-success or HTLC-timeout transaction,
+and the closer's estimate for the closing transaction.
+
+#### Rationale
+
+No message changes. A MuSig2 partial signature is a 32-byte scalar with no
+hash type, and the `htlc_signature` field is 64 bytes whatever the hash type.
+As for every other channel type, the hash type comes from the channel type and
+not from the message, so what changes is the signature hash both peers sign
+and the length of the signature in the final witness.
+
+`SIGHASH_DEFAULT` cannot carry the opt-in: under BIP 341 it is the absence of
+a hash type byte, and the unified signature hash does not define the bit
+without one. `SIGHASH_ALL` signs the same parts of the transaction, so `0x21`
+is its counterpart under these rules, at the cost of one witness byte per
+signature.
+
+The commitment transaction fee is the one figure both peers compute
+independently and must agree on, which is why its weight is given here. A
+peer that used 968 could compute a different fee, as it does in the first and
+third test vectors below, and its signature would then not verify.
+
+#### Test vectors
+
+These use the parameters, keys and scripts of the test vectors of
+[bolt-simple-taproot.md](bolt-simple-taproot.md), and the same three
+commitment transactions, with `option_unified_sigs`:
+
+  - Each commitment transaction pays the fee for weight
+    `969 + 172 * num-untrimmed-htlc-outputs` from `to_local`. With no HTLCs at
+    `fee_per_kw` 15000 the fee is 14535 satoshis rather than 14520, and with
+    two untrimmed HTLCs at 644 it is 845 rather than 844. With five untrimmed
+    HTLCs at 644 it is 1177 at either weight, so that transaction differs
+    from the original only in its witness.
+  - The funding input's witness is the aggregated signature followed by
+    `0x21`, over the unified signature hash for a taproot key-path spend.
+  - In each HTLC-success and HTLC-timeout transaction the remote signature
+    ends in `0xa3` and the local one in `0x21`, both over the unified
+    signature hash for a tapscript spend, and both BIP 340 signatures with
+    zero `auxrand`.
+
+The messages differ from those of
+[bolt-simple-taproot.md](bolt-simple-taproot.md), so fresh MuSig2 nonces are
+used. Each secret nonce is BIP 327's `NonceGen` with `rand'` =
+`SHA256(seed || label)`, the signer's funding key as `sk` and `pk`, the
+funding output key as `aggpk`, the unified signature hash as `msg`, and no
+`extra_in`, where `label` is `"local-signing-rand-unified"` or
+`"remote-signing-rand-unified"`. A real verification nonce is sent before the
+message it will sign exists, so it cannot commit to it; these do only so that
+they can be reproduced. As in
+[bolt-simple-taproot.md](bolt-simple-taproot.md), both the secret and the
+public nonces are given, so implementations can inject them directly.
+
+```json
+{
+  "transactions": [
+    {
+      "name": "simple commitment tx with no HTLCs",
+      "local_balance_msat": 7000000000,
+      "remote_balance_msat": 3000000000,
+      "fee_per_kw": 15000,
+      "htlcs": null,
+      "commitment_weight": 969,
+      "commitment_fee_satoshis": 14535,
+      "local_sec_nonce": "088a7c449e7103ca9c41d476d07a3a7dcc65b34510db0e439735f06415736b07dfa82c5e7b606cbc1768b8cb43e826a429fa4741bd88c162eade1db254baed5c03b7203dec7c13896b6ff1f58b24f84458c441720a12b5a57426397e22f0a8c78b",
+      "remote_sec_nonce": "017b6c40971b4c0eae1e00f685edddc837bd0edb76104772d3d70a5b8517e866ea3a0e4b1dd93bcc46953d658372ea84219692f4478073e0b5b1415d094ef2d002956e6845a6f346f97c5e028c0f8ab38a76b0124fd7184deab60f682b3e657fdb",
+      "local_nonce": "033a54a7a9f9742ff744923d301a7e4f8eb7ce6d507e690a134d822400865848a603b742fd94ab84fd47f0ab8d04d0993639bcd2e27a6db497739a4bd576f65fc0f1",
+      "remote_nonce": "0206ce3bdb0c60611c94b18af22868066ea6a7ea9ab2477a7634fdcce4565b3b5c03018c77f16aaa80d8386782efaae22e7c90021035f0aa831470000af7a54b7811",
+      "remote_partial_sig": "e7be452200e95b3354724625872f2efa89c185b0985f52b9beb9a3e5e886f72a",
+      "expected_commitment_tx_hex": "020000000001015474cba49124ab0c4327c244bb2907059585c4af3fa5f3469701534120fec0170000000000c5fe1780044a010000000000002251201249c50576fdf914caa14f9221370b986df520bdbc73f57d5056a86ee03e5ac44a01000000000000225120f67ab012701705f3203d132f909a6810ef18c5da4c11d986cb50818803b8344ec0c62d00000000002251203609bb705034e5629aa6ec05c5ca906ac89ac08b34c4583c259521ec3017440865946a00000000002251203e1fcbbd06c8a7414704612c72be9834a75d86ed85b29f0ef0c52e1950afaff30141cb8d82942595f5680ab31de258febbc49bc99e83b84ae5fbfd1574b0f371c43d2936ab37a2b97de885df40b800d42726f3236a5c74eb46f5b497f40b227b03532155dc1920",
+      "htlc_descs": null
+    },
+    {
+      "name": "commitment tx with five HTLCs untrimmed",
+      "local_balance_msat": 6988000000,
+      "remote_balance_msat": 3000000000,
+      "fee_per_kw": 644,
+      "htlcs": [
+        {
+          "incoming": true,
+          "amount_msat": 1000000,
+          "expiry": 500,
+          "preimage": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "incoming": true,
+          "amount_msat": 2000000,
+          "expiry": 501,
+          "preimage": "0101010101010101010101010101010101010101010101010101010101010101"
+        },
+        {
+          "incoming": false,
+          "amount_msat": 2000000,
+          "expiry": 502,
+          "preimage": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        {
+          "incoming": false,
+          "amount_msat": 3000000,
+          "expiry": 503,
+          "preimage": "0303030303030303030303030303030303030303030303030303030303030303"
+        },
+        {
+          "incoming": true,
+          "amount_msat": 4000000,
+          "expiry": 504,
+          "preimage": "0404040404040404040404040404040404040404040404040404040404040404"
+        }
+      ],
+      "commitment_weight": 1829,
+      "commitment_fee_satoshis": 1177,
+      "local_sec_nonce": "06cd05b6c9c7540a9f69a1c8a9b9b51a617e3bae49fce52e26253eb59228c889f7b807a97ba444d38ac7fd009c1977e5abf81b8fc9a7bbeac9446f48677cf28603b7203dec7c13896b6ff1f58b24f84458c441720a12b5a57426397e22f0a8c78b",
+      "remote_sec_nonce": "23b7747d27e2bca5baa56d4bd648a374ec58f18a22466d60a0ffff4721d8b621084d5984830d5bfef1bb89122d1610b8a3b0083aa3bd9e8f5761da5f8c10bca802956e6845a6f346f97c5e028c0f8ab38a76b0124fd7184deab60f682b3e657fdb",
+      "local_nonce": "02fa84ae60b7486ce8361d9a3a81ece9e08b2999ec8aba6502ace63b33ab695e2e0373f5a5211bff99b2c2f715ba8fd0dd224fb9b41f3f4140ffb53aef835e6a7704",
+      "remote_nonce": "02f492a57e8ad484f7cfd506552430bec2d160a95f569059a291b3da0494d77c34022b0304ee506f4fc10107252c21b0970adb047ac9600f2dce64ff5cc2a5d5f53b",
+      "remote_partial_sig": "51befe10dcbb55651a8ce1f2f2460e13d2a2907217964896b34e423d5a557247",
+      "expected_commitment_tx_hex": "020000000001015474cba49124ab0c4327c244bb2907059585c4af3fa5f3469701534120fec0170000000000c5fe1780094a010000000000002251201249c50576fdf914caa14f9221370b986df520bdbc73f57d5056a86ee03e5ac44a01000000000000225120f67ab012701705f3203d132f909a6810ef18c5da4c11d986cb50818803b8344ee8030000000000002251209ce82cd1b1f6f975049d58019a7145a3ec9680079969cf929d7d2c4bc9b30637d0070000000000002251208937f8afbc80cf4ba773f1adc3d63ea26259f80f5a3ba622211906d2e7e6e23dd007000000000000225120bf9ae94dda9b5b88485cc67a966ec946b237d19626916dee034b789ebd7fd5fcb80b0000000000002251208fe2e1306e414e896dfd879475b5c1a6a01d4e79b32c0544aa185ccb73c392aaa00f000000000000225120d93389ba5cdde8570d3ba73487ff7fc9f8c3816645009e42110fe5239f5a3e62c0c62d00000000002251203609bb705034e5629aa6ec05c5ca906ac89ac08b34c4583c259521ec30174408b3996a00000000002251203e1fcbbd06c8a7414704612c72be9834a75d86ed85b29f0ef0c52e1950afaff3014189c11fb31668165d980310dffe49951a22a341b547e004fb1b7ab6be53b42c4148af270f6955ef7ea2d9a9cc622e58b66863c1b7b1955acf5e3f48bfe46dea812155dc1920",
+      "htlc_descs": [
+        {
+          "remote_partial_sig_hex": "08d5d6c85e57882dc8b4ae4fc86b7133966f142937c23de95a41f98ac9408dd804bce31fa5ba6c6ca2eb6c3e1f4d69f525de1dbc589c2acecfb086a32e02c41a",
+          "resolution_tx_hex": "02000000000101ec4c0a34c981864f9badcb8383bbe42ec6b32e68c2aa1a7c7c2e8422adde673f02000000000100000001e803000000000000225120df20bcec43daa75161f7d013254e401812e0fee8bc3369220b6a33672fc18ba0054108d5d6c85e57882dc8b4ae4fc86b7133966f142937c23de95a41f98ac9408dd804bce31fa5ba6c6ca2eb6c3e1f4d69f525de1dbc589c2acecfb086a32e02c41aa3412cfe3ae72bfdf906e3861ae6f22841fe9d78e3f91b1524b3140ebdbe1b9171ddda5c134a169d45f65158d25e019ed4786de6f45436dd9ff9d575afb6b3a580d5212000000000000000000000000000000000000000000000000000000000000000005f82012088a914b8bcb07f6344b42ab04250c86a6e8b75d3fdbbc6882071e82ef65d5c667159036bfcf662cac2f6c41e38323d148bbbd00fdcd923739ead202deba21cf03c42362c9f912094f62ba045a040a2060882ba1ed3abf1f664a47dac41c0d4c77088d346bce67c13bbbf82ca112588f4b1c9595a1f8af3be9b2f95a109a0e5e8fd071b9ade6367122afbd8acacc1a6727ddb6d478612af30827590027e0300000000"
+        },
+        {
+          "remote_partial_sig_hex": "4f42bd04844b0f616e3bdfe944ce3221179e1eafb17c93a3cc0257744da856d0a45e6fafbcd9450da8f251c4a0cfa78d68daa60f828f050beace2205404fbb06",
+          "resolution_tx_hex": "02000000000101ec4c0a34c981864f9badcb8383bbe42ec6b32e68c2aa1a7c7c2e8422adde673f03000000000100000001d007000000000000225120df20bcec43daa75161f7d013254e401812e0fee8bc3369220b6a33672fc18ba005414f42bd04844b0f616e3bdfe944ce3221179e1eafb17c93a3cc0257744da856d0a45e6fafbcd9450da8f251c4a0cfa78d68daa60f828f050beace2205404fbb06a341065a7777ba3c41ea055d3800914840d481624bd8f355f348b1aab439ee0c6f1b0152bf04e58c575d08c346bd52012bc96ee918440baea03aa452bb68b0e24acb212001010101010101010101010101010101010101010101010101010101010101015f82012088a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce239882071e82ef65d5c667159036bfcf662cac2f6c41e38323d148bbbd00fdcd923739ead202deba21cf03c42362c9f912094f62ba045a040a2060882ba1ed3abf1f664a47dac41c0d4c77088d346bce67c13bbbf82ca112588f4b1c9595a1f8af3be9b2f95a109a0127d1790461eff920f14ba7cff2093c44b8a83e6f0a959fa60e04cf8c435cf4b00000000"
+        },
+        {
+          "remote_partial_sig_hex": "de55a0be4de533bd7b1bac3f7048d05bf53522d49585e4b65dfed19265302d28a9b87c187463c1afc7d645f0b904b4044d603f3447fabe39a541fb7ac49a51c0",
+          "resolution_tx_hex": "02000000000101ec4c0a34c981864f9badcb8383bbe42ec6b32e68c2aa1a7c7c2e8422adde673f04000000000100000001d007000000000000225120df20bcec43daa75161f7d013254e401812e0fee8bc3369220b6a33672fc18ba00441de55a0be4de533bd7b1bac3f7048d05bf53522d49585e4b65dfed19265302d28a9b87c187463c1afc7d645f0b904b4044d603f3447fabe39a541fb7ac49a51c0a341aa24ed9dc9f4fc7fea6fbd0ca48daf9664a50cd444ab8b7515cdb2094e35101b0113cbe9b9114eefa8dde2b8dfeb192de4c17a3686bf1cb715215dbd3461e12721442071e82ef65d5c667159036bfcf662cac2f6c41e38323d148bbbd00fdcd923739ead202deba21cf03c42362c9f912094f62ba045a040a2060882ba1ed3abf1f664a47dac41c1d4c77088d346bce67c13bbbf82ca112588f4b1c9595a1f8af3be9b2f95a109a040b30263c4d7cd1fa6544e8bc8cd9efe857d7b5fd691c958936c3a2e0df2232ef6010000"
+        },
+        {
+          "remote_partial_sig_hex": "49d079c86c510713b58343e9a16c46b10e300b993c9113219c03fafd6861e1c424ae590b965fb97778b857f9d8dd6c4e8b384fddbda29c327c7d4898121e87c0",
+          "resolution_tx_hex": "02000000000101ec4c0a34c981864f9badcb8383bbe42ec6b32e68c2aa1a7c7c2e8422adde673f05000000000100000001b80b000000000000225120df20bcec43daa75161f7d013254e401812e0fee8bc3369220b6a33672fc18ba0044149d079c86c510713b58343e9a16c46b10e300b993c9113219c03fafd6861e1c424ae590b965fb97778b857f9d8dd6c4e8b384fddbda29c327c7d4898121e87c0a3417e1009b532c26190ea4bf6c4f8c52dc747c9946227345d813ed5768ffce7a1916dd74c80e3cee5797585c2c6d9aab589b21d8635ae477888fe6d5acf1801f44821442071e82ef65d5c667159036bfcf662cac2f6c41e38323d148bbbd00fdcd923739ead202deba21cf03c42362c9f912094f62ba045a040a2060882ba1ed3abf1f664a47dac41c0d4c77088d346bce67c13bbbf82ca112588f4b1c9595a1f8af3be9b2f95a109a064c44563d1bd58fa25c5c3ca7303c75849b6b3d91bf2e28f27068db4319b4c2ff7010000"
+        },
+        {
+          "remote_partial_sig_hex": "52507b8b8597f715e03ec54c3410452a8cb215084110fa26f3a27e7224e47a1495805a96fd156be7a5c867e7610f86b34714661a2c423000d3ae90e034e8f462",
+          "resolution_tx_hex": "02000000000101ec4c0a34c981864f9badcb8383bbe42ec6b32e68c2aa1a7c7c2e8422adde673f06000000000100000001a00f000000000000225120df20bcec43daa75161f7d013254e401812e0fee8bc3369220b6a33672fc18ba0054152507b8b8597f715e03ec54c3410452a8cb215084110fa26f3a27e7224e47a1495805a96fd156be7a5c867e7610f86b34714661a2c423000d3ae90e034e8f462a341ba5c3c5a31a0327e683f909cb462ed599d58c8e18dc067b52aee067599d14cb7bd08fc65de0e1a77492170a62cc32d2b3516de755dfac07089a3f761c07979f1212004040404040404040404040404040404040404040404040404040404040404045f82012088a91418bc1a114ccf9c052d3d23e28d3b0a9d12274342882071e82ef65d5c667159036bfcf662cac2f6c41e38323d148bbbd00fdcd923739ead202deba21cf03c42362c9f912094f62ba045a040a2060882ba1ed3abf1f664a47dac41c1d4c77088d346bce67c13bbbf82ca112588f4b1c9595a1f8af3be9b2f95a109a06c3390c812b2596986592f02c7f22e4f857fb553805ff9ac1c2bda361c47c3fb00000000"
+        }
+      ]
+    },
+    {
+      "name": "commitment tx with some HTLCs trimmed",
+      "local_balance_msat": 6988000000,
+      "remote_balance_msat": 3000000000,
+      "fee_per_kw": 644,
+      "dust_limit_satoshis": 2500,
+      "htlcs": [
+        {
+          "incoming": true,
+          "amount_msat": 1000000,
+          "expiry": 500,
+          "preimage": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "incoming": true,
+          "amount_msat": 2000000,
+          "expiry": 501,
+          "preimage": "0101010101010101010101010101010101010101010101010101010101010101"
+        },
+        {
+          "incoming": false,
+          "amount_msat": 2000000,
+          "expiry": 502,
+          "preimage": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        {
+          "incoming": false,
+          "amount_msat": 3000000,
+          "expiry": 503,
+          "preimage": "0303030303030303030303030303030303030303030303030303030303030303"
+        },
+        {
+          "incoming": true,
+          "amount_msat": 4000000,
+          "expiry": 504,
+          "preimage": "0404040404040404040404040404040404040404040404040404040404040404"
+        }
+      ],
+      "commitment_weight": 1313,
+      "commitment_fee_satoshis": 845,
+      "local_sec_nonce": "39e32a5cb295932cf6ce016e6c1616ff275563a54f2b8c89dfdc0693c1d549babfda70ad6523a91adc322ee5991576c1af4f408d9a0477b0d9ebc83f6eb6a53703b7203dec7c13896b6ff1f58b24f84458c441720a12b5a57426397e22f0a8c78b",
+      "remote_sec_nonce": "24ab8a776e0ea89a200a86b145aacb8985251697641a117b834b9a9a21e7803663885e6ee52f87667c7f997a2b44aaafe17334c9759a35564cb8f73f6abc5b6102956e6845a6f346f97c5e028c0f8ab38a76b0124fd7184deab60f682b3e657fdb",
+      "local_nonce": "02db9acffda316872c75296559f690a3e17f2ce548d09f066e45a670bd4a747c0f033ce9eb3a2101de70bb7cceced3f466113e430dd35a3180e6d3fc3ebf8810dcbb",
+      "remote_nonce": "03264728dff91fdbda8687f9b781a61c18b5ceb422a0159803e0778a935fcbc464030cb2cba27eb073a02bf0c9ab72b6984cefb9447ca8ff8cd33ba44d63e82772cc",
+      "remote_partial_sig": "c115758d7aa712c15799a33b04cbea254ec9166559361f778cdf533ce7b1f3fd",
+      "expected_commitment_tx_hex": "020000000001015474cba49124ab0c4327c244bb2907059585c4af3fa5f3469701534120fec0170000000000c5fe1780064a010000000000002251201249c50576fdf914caa14f9221370b986df520bdbc73f57d5056a86ee03e5ac44a01000000000000225120f67ab012701705f3203d132f909a6810ef18c5da4c11d986cb50818803b8344eb80b0000000000002251208fe2e1306e414e896dfd879475b5c1a6a01d4e79b32c0544aa185ccb73c392aaa00f000000000000225120d93389ba5cdde8570d3ba73487ff7fc9f8c3816645009e42110fe5239f5a3e62c0c62d00000000002251203609bb705034e5629aa6ec05c5ca906ac89ac08b34c4583c259521ec30174408ff9a6a00000000002251203e1fcbbd06c8a7414704612c72be9834a75d86ed85b29f0ef0c52e1950afaff30141d1fc6af0963cb5b3847683fcbc67321015898a2bf5816f3427c22384b434fb9d31d7e3f0163c3f153f64e804c428a70f68677536975c901f14139e3c3f94035d2155dc1920",
+      "htlc_descs": [
+        {
+          "remote_partial_sig_hex": "a78ff55798c2f1e8fb6d2c0efcf89898d5779973bf913bcf2ad5266329ec65d373785bd63e88a0807ab1264a9a4b29bbf97aadf0406390831ab951b27f4a48b4",
+          "resolution_tx_hex": "020000000001010f9f911e6c3cb264b3c1eb0ebca8d9dbefab833eb616cd5b8603818f1f015cc902000000000100000001b80b000000000000225120df20bcec43daa75161f7d013254e401812e0fee8bc3369220b6a33672fc18ba00441a78ff55798c2f1e8fb6d2c0efcf89898d5779973bf913bcf2ad5266329ec65d373785bd63e88a0807ab1264a9a4b29bbf97aadf0406390831ab951b27f4a48b4a3419c74f05a80edfcff6e6b8a91887aceab07f08e98666eeef5c84dd71ecd0e027eed5dac042273edb8627853e575398d102337c7a01987af91060359e20286970f21442071e82ef65d5c667159036bfcf662cac2f6c41e38323d148bbbd00fdcd923739ead202deba21cf03c42362c9f912094f62ba045a040a2060882ba1ed3abf1f664a47dac41c0d4c77088d346bce67c13bbbf82ca112588f4b1c9595a1f8af3be9b2f95a109a064c44563d1bd58fa25c5c3ca7303c75849b6b3d91bf2e28f27068db4319b4c2ff7010000"
+        },
+        {
+          "remote_partial_sig_hex": "f8b204dd5bf49fb755da434cb0e8e9a8abcb37441daf98ead197013344564d027563bd34a199d5047a46b7e860b43c3b7ec9a7d8c51b6ecb6849bb14616a21cb",
+          "resolution_tx_hex": "020000000001010f9f911e6c3cb264b3c1eb0ebca8d9dbefab833eb616cd5b8603818f1f015cc903000000000100000001a00f000000000000225120df20bcec43daa75161f7d013254e401812e0fee8bc3369220b6a33672fc18ba00541f8b204dd5bf49fb755da434cb0e8e9a8abcb37441daf98ead197013344564d027563bd34a199d5047a46b7e860b43c3b7ec9a7d8c51b6ecb6849bb14616a21cba341fbeeb051be5e2ef05474e6b2d92a198b6294a65795bdc3c547d839ac468ebcdd1b3c7b1d0fb5fa7c31cbc0c3f699c390862d40866a1a26e833ed8e0183e4860b212004040404040404040404040404040404040404040404040404040404040404045f82012088a91418bc1a114ccf9c052d3d23e28d3b0a9d12274342882071e82ef65d5c667159036bfcf662cac2f6c41e38323d148bbbd00fdcd923739ead202deba21cf03c42362c9f912094f62ba045a040a2060882ba1ed3abf1f664a47dac41c1d4c77088d346bce67c13bbbf82ca112588f4b1c9595a1f8af3be9b2f95a109a06c3390c812b2596986592f02c7f22e4f857fb553805ff9ac1c2bda361c47c3fb00000000"
+        }
+      ]
+    }
+  ]
+}
+```
 
 ## Legacy Closing Transaction
 
@@ -582,10 +865,16 @@ This yields the following *expected weights* (details of the computation in [App
 
     Commitment weight (no option_anchors):   724 + 172 * num-untrimmed-htlc-outputs
     Commitment weight (option_anchors):     1124 + 172 * num-untrimmed-htlc-outputs
+    Commitment weight (simple taproot):      968 + 172 * num-untrimmed-htlc-outputs
+    Commitment weight (simple taproot, option_unified_sigs): 969 + 172 * num-untrimmed-htlc-outputs
     HTLC-timeout weight (no option_anchors): 663
     HTLC-timeout weight (option_anchors): 666
     HTLC-success weight (no option_anchors): 703
     HTLC-success weight (option_anchors): 706
+
+The simple taproot figures rest on their own assumptions (a 64-byte or 65-byte
+Schnorr signature, and the 3-byte output count of `option_anchors`), set out in
+[Appendix A](#simple-taproot-commitment-transaction).
 
 Note the reference to the "base fee" for a commitment transaction in the requirements below, which is what the funder pays.
 The actual fee may be higher than the amount calculated here, due to rounding and trimmed outputs.
@@ -608,7 +897,9 @@ The base fee for a commitment transaction:
   - If `zero_fee_commitments` applies:
     1. MUST be 0.
   - Otherwise, MUST be calculated to match:
-    1. Start with `weight` = 724 (1124 if `option_anchors` applies).
+    1. Start with `weight` = 724, or 1124 if `option_anchors` applies. For a
+    simple taproot channel type, start instead with 968, or 969 with
+    `option_unified_sigs` (see [Simple taproot channels](#simple-taproot-channels)).
     2. For each committed HTLC, if that output is not trimmed as specified in
     [Trimmed Outputs](#trimmed-outputs), add 172 to `weight`.
     3. Multiply `feerate_per_kw` by `weight`, divide by 1000 (rounding down).
@@ -1172,6 +1463,53 @@ Multiplying non-witness data by 4 results in a weight of:
 
 	overall_weight (no option_anchors) = 500 + 172 * num-htlc-outputs + 224 weight
 	overall_weight (option_anchors) = 900 + 172 * num-htlc-outputs + 224 weight
+
+### Simple Taproot Commitment Transaction
+
+The commitment transaction of a simple taproot channel
+([bolt-simple-taproot.md](bolt-simple-taproot.md)) spends the funding output
+on the key path and always has both anchor outputs. Every output is P2TR:
+
+	p2tr: 34 bytes
+		- OP_1: 1 byte
+		- OP_DATA: 1 byte (output key length)
+		- output_key: 32 bytes
+
+	commitment_transaction (simple taproot): 225 + 43 * num-htlc-outputs bytes
+		- version: 4 bytes
+		- witness_header <---- part of the witness data
+		- count_tx_in: 1 byte
+		- tx_in: 41 bytes
+			funding_input
+		- count_tx_out: 3 byte
+		- tx_out: 172 + 43 * num-htlc-outputs bytes
+			output_paying_to_remote,
+			output_paying_to_local,
+			output_anchor,
+			output_anchor,
+			....htlc_output's...
+		- lock_time: 4 bytes
+
+	witness: 66 bytes (67 with option_unified_sigs)
+		- number_of_witness_elements: 1 byte
+		- signature_length: 1 byte
+		- signature: 64 bytes (65 with option_unified_sigs: the signature
+		  followed by 0x21)
+
+	witness_header: 2 bytes
+		- flag: 1 byte
+		- marker: 1 byte
+
+Multiplying non-witness data by 4 results in a weight of:
+
+	// 900 + 172 * num-htlc-outputs weight
+	commitment_transaction_weight = 4 * commitment_transaction
+
+	// 68 weight (69 with option_unified_sigs)
+	witness_weight = witness_header + witness
+
+	overall_weight (simple taproot) = 900 + 172 * num-htlc-outputs + 68 weight
+	overall_weight (simple taproot, option_unified_sigs) = 900 + 172 * num-htlc-outputs + 69 weight
 
 ## Expected Weight of HTLC-timeout and HTLC-success Transactions
 
