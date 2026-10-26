@@ -839,7 +839,8 @@ determine the contents of a commitment transaction — even if the _watcher_ kno
 which transaction ID to watch for and can make a reasonable guess
 as to which HTLCs and balances may be included. Nonetheless, to
 avoid storage of every commitment transaction, a _watcher_ can be given the
-`per_commitment_secret` values (which can be stored compactly) and the
+`per_commitment_secret` values (which can be stored compactly, except on a
+channel with `option_independent_secrets`) and the
 `revocation_basepoint` and `delayed_payment_basepoint` used to regenerate
 the scripts required for the penalty transaction; thus, a _watcher_ need only be
 given (and store) the signatures for each penalty input.
@@ -858,7 +859,11 @@ cannot relate the `local_delayedpubkey` or `revocationpubkey` with their bases.
 
 For efficiency, keys are generated from a series of per-commitment secrets
 that are generated from a single seed, which allows the receiver to compactly
-store them (see [below](#efficient-per-commitment-secret-storage)).
+store them (see [below](#efficient-per-commitment-secret-storage)). On a
+channel with
+[`option_independent_secrets`](#independent-per-commitment-secrets), they
+need not come from one seed, and the receiver may have to store them
+individually.
 
 ### `localpubkey`, `local_htlcpubkey`, `remote_htlcpubkey`, `local_delayedpubkey`, and `remote_delayedpubkey` Derivation
 
@@ -1018,10 +1023,12 @@ A node generating its per-commitment secrets on a channel with
   - SHOULD generate them so that it can compute any of them again from data
     that does not change as the channel advances, for example:
     - with the algorithm above, from a seed of its own for the channel.
-    - with a key derivation function applied to a private seed, a value
-      unique to the channel and the commitment number.
+    - with a pseudorandom function such as HMAC-SHA256, keyed with a private
+      seed it uses for nothing else, on a value unique to the channel and the
+      commitment number.
     - with a threshold pseudorandom function, run by several signers, on a
-      value unique to the channel and the commitment number.
+      value unique to the channel and the commitment number, whose output
+      each signer holds only a share of.
   - if it generates them from a value unique to the channel:
     - MUST choose that value itself, fix it when the channel opens, and use
       it for no other channel: for example, the `funding_pubkey` it sent in
@@ -1041,9 +1048,9 @@ A node generating its per-commitment secrets on a channel with
   - MUST NOT use the same per-commitment secret for two commitment numbers,
     or on two channels.
   - MUST be able to reveal the per-commitment secret for every per-commitment
-    point it has sent, including after a restart: for example, by persisting
-    the secret, or whatever its signers need to reveal it jointly, before it
-    sends the point.
+    point it has sent, including after a restart, until it has revealed a
+    later secret: for example, by persisting the secret, or whatever its
+    signers need to reveal it jointly, before it sends the point.
   - MUST be able to check `your_last_per_commitment_secret` in
     `channel_reestablish` for any commitment number, including after being
     restored from an old backup. It MAY do so by checking that the secret
@@ -1052,30 +1059,94 @@ A node generating its per-commitment secrets on a channel with
     restore cannot roll back treats a commitment number above the highest it
     has recorded there as one it has not reached, and the secret claimed for
     it as incorrect; and the secret claimed for a lower number whose secret
-    it has deleted as correct, since it has revealed that secret.
+    it has deleted as correct, since it has revealed that secret. A node that
+    records the highest commitment number whose per-commitment point it has
+    sent, before it sends that point and in storage a restore cannot roll
+    back, MAY likewise treat a number above it as one it has not reached.
   - SHOULD keep whatever it needs to reveal and check its secrets at least as
     recoverable as its funding key: for example, a node whose signers each
     hold a share of what generates its secrets SHOULD back up those shares
     with the same care as their shares of the funding key.
-  - if several signers generate its secrets:
+  - if several signers generate its secrets, or hold shares of its funding
+    key:
+    - MUST ensure that no group of signers smaller than both the group whose
+      parts make up a secret and the group needed to sign its commitment
+      transaction can obtain both the secret of one of its commitment
+      transactions and a signature with which it can broadcast that
+      commitment transaction, or make it broadcast a commitment transaction
+      it has revoked, or, while the other signers can still sign, leave it
+      without a commitment transaction it has not revoked, with its HTLC
+      transactions, that it can broadcast on each funding output that can
+      still confirm.
     - MUST generate each secret, and compute its per-commitment point, such
-      that no group of signers smaller than the one it needs to revoke a
-      commitment learns or chooses the secret before the node revokes that
-      commitment: for example, with a scheme in which each signer commits to
-      its share before any share is revealed, and in which the point is
-      computed from the signers' shares of the point, without the secret.
+      that no group of signers smaller than the one whose parts make up the
+      secret learns or chooses it before the node revokes that commitment:
+      for example, with a scheme in which each signer commits to its share
+      before any share is revealed, and in which the point is computed from
+      the signers' shares of the point, without the secret.
+    - MUST compute each per-commitment point, whether to send it or to check
+      a claimed secret against it, such that no such group can change it:
+      for example, from shares that each signer has proved against a
+      commitment fixed when the channel opened, or from shares that each
+      come from enough signers that no such group holds every copy, stopping
+      if the copies differ.
     - MUST NOT check `your_last_per_commitment_secret` by producing the
       secret: it compares the claimed secret times `G` with the point of that
-      commitment number, or, if it stores random secrets, treats a number
-      above the highest it has recorded as one it has not reached.
-    - each of its signers:
-      - MUST NOT release its part of the secret of commitment number `n`
-        until it has itself checked the peer's signatures for the node's
-        commitment transaction with commitment number `n+1`, on every
-        funding output while a splice is pending.
-      - once it has released it, MUST NOT take part in signing the node's
-        commitment transaction with commitment number `n`, or a lower one,
-        for broadcast.
+      commitment number, or treats a number above the highest it has
+      recorded, in storage a restore cannot roll back, as one it has not
+      reached.
+    - once it cannot revoke one of its commitment transactions (for example,
+      because a signer has helped sign it, or is lost for good), SHOULD fail
+      the channel, broadcasting the latest commitment transaction it holds
+      the peer's signatures for, if enough signers remain to sign it and the
+      [`channel_reestablish` requirements](02-peer-protocol.md#message-retransmission)
+      allow it.
+
+The following is one way to meet the first of those requirements, which this
+document does not specify further; a node that departs from any part of it
+has to meet the requirement some other way:
+  - Each signer works out for itself, from each transaction spending a
+    funding output that it checks or helps sign, whether it is a commitment
+    transaction of the node and, if so, its commitment number; computes that
+    number's per-commitment point; and checks that the transaction's keys
+    come from it.
+  - A signer that has helped sign the node's commitment transaction with
+    commitment number `n`, on any funding output, never helps revoke `n` or
+    any later commitment number.
+  - Before any signer releases its part of the secret of `n`, every signer
+    holding a share of any funding key whose output a commitment transaction
+    of the node can still spend has recorded `n` as revoked, and the
+    releasing signer has checked that for itself: for example, from a
+    statement each of them signed, with a key fixed when it joined, naming
+    the channel and `n`, after recording it. A signer that has recorded `n`
+    never helps sign the node's commitment transaction with commitment
+    number `n`, or a lower one.
+  - Before recording `n`, each signer checks the peer's signature and every
+    `htlc_signature` for the node's commitment transaction with commitment
+    number `n+1`, on every funding output that a commitment transaction of
+    the node can still spend, and keeps them, with what is needed to rebuild
+    that transaction and its HTLC transactions, where the node can use them
+    to broadcast. It tracks those funding outputs itself, not on another
+    signer's word, until it has seen each one spent, or a transaction
+    conflicting with the one that creates it confirmed, at a depth it
+    treats as final; it helps sign a funding or splice transaction only once
+    it holds the peer's signatures for the node's commitment transaction on
+    the new output; and the node sends `channel_ready` or `splice_locked`
+    only once its signers have seen the funding or splice transaction
+    confirmed at the depth they treat as final, even with `option_zeroconf`.
+  - Each signer keeps these records, and a record of each nonce share it has
+    used, where restoring it from a backup cannot roll them back, writing
+    each before it acts on it. A signer restored without them cannot tell
+    which commitment transactions it has helped sign: it helps revoke no
+    further commitment number of a channel it held shares for, so the node
+    has to close that channel; it helps sign no commitment transaction of the
+    node with commitment number `m` until every other signer has stated, in
+    answer to a challenge it chose, that it has not recorded `m` or any
+    higher number as revoked, and it makes no such statement itself; and it
+    uses no nonce share it may have used before.
+
+Every signer holding a share of a funding key then has to be reachable for the
+channel to advance.
 
 A node receiving per-commitment secrets on a channel with
 `option_independent_secrets`:
@@ -1117,7 +1188,8 @@ A node receiving per-commitment secrets on a channel with
         HTLCs after `shutdown`. A receiver that does not tell these apart
         SHOULD allow a margin beyond the limit for them.
       - MAY fail the channel if its peer goes on revoking commitment
-        transactions beyond that margin.
+        transactions that its own updates did not cause, beyond any margin
+        it allows.
 
 `option_independent_secrets` MAY be combined with the simple taproot channel
 types of [bolt-simple-taproot.md](bolt-simple-taproot.md); their
@@ -1134,14 +1206,20 @@ For a node whose signing keys are held by several signers, the requirements
 below replace that document's use of `NonceGen` and `Sign` from the `musig2`
 BIP, which assume that one signer holds the whole secret nonce and secret key.
 Such a node:
-  - MUST produce each of its MuSig2 partial signatures such that no single
-    signer learns the node's secret nonce or another signer's key share. This
-    document does not specify how: a threshold signing scheme in the style
-    of FROST, or nested MuSig2, are examples. To its peer the result is one
-    ordinary partial signature.
-  - MUST NOT derive its MuSig2 secret nonces from a seed that any single
-    signer holds.
+  - MUST produce each of its MuSig2 partial signatures such that no group of
+    signers smaller than the one it needs to sign learns the node's secret
+    nonce or another signer's key share. This document does not specify how:
+    a threshold signing scheme in the style of FROST, or nested MuSig2, are
+    examples. To its peer the result is one ordinary partial signature.
+  - MUST NOT derive its MuSig2 secret nonces from a seed that such a group
+    holds.
   - MUST NOT use the same secret nonce to sign two different messages.
+  - each of its signers:
+    - MUST NOT use the same share of a secret nonce to sign two different
+      messages.
+    - MUST record that it has used a nonce share, where restoring it from a
+      backup cannot roll the record back, before it sends a partial signature
+      made with it.
   - MUST persist each verification nonce it sends, or whatever its signers
     need to reproduce it, before sending it, as that document already requires
     of nonces not made with its counter-based scheme.
@@ -1149,7 +1227,9 @@ Such a node:
     verification nonce it has sent at least as recoverable as their shares of
     the funding key: a verification nonce can fix which signers have to take
     part in the signature with which the node broadcasts its commitment
-    transaction.
+    transaction, and a signer restored without its record of the nonce shares
+    it has used cannot take part, so the node may then have to rely on its
+    peer to close the channel.
 
 #### Rationale
 
@@ -1162,7 +1242,7 @@ those signers can then give the seed to the channel peer, who learns the secret
 of the node's current commitment and can claim its outputs through the
 revocation path as soon as the node broadcasts it. Independent secrets let a
 node generate each secret jointly, with no signer ever holding it, and reveal
-it only once enough signers agree that the commitment is revoked.
+it only once its signers have recorded the commitment as revoked.
 
 The cost falls on the receiver, which stores a 32-byte secret per revoked
 commitment, with its commitment number, instead of a fixed 49 entries: about 32
@@ -1191,10 +1271,13 @@ derive, so a sender that is not using the algorithm shows itself at the first
 secret that does not come from it, or at the next one at the latest (in the
 second test vector below, the secret for `n: 0` is inserted and the one for
 `n: 1` fails), and every secret inserted before that can still be produced.
-The secret that fails and every later one have to be stored individually. A
-static backup that carries the compact representation can therefore still
-punish any state that a seed-based peer revoked before the backup was made, but
-none whose secret had to be stored individually.
+The secret that fails and every later one have to be stored individually: with
+one missing, a later secret could go in unchecked, at an index the
+representation checks nothing for, and replace one it still needs (in the
+second test vector, the secret for `n: 2` would replace the only copy of the
+one for `n: 0`). A static backup that carries the compact representation can
+therefore still punish any state that a seed-based peer revoked before the
+backup was made, but none whose secret had to be stored individually.
 
 A node that restarts from an old backup relies on
 `your_last_per_commitment_secret` to learn that its peer has seen a later
@@ -1224,17 +1307,42 @@ for `n`, keep the other at `n`, and take its funds once the node broadcasts
 that commitment. So the value that makes them differ is one the node chooses
 and fixes when the channel opens: a value its peer chooses could be repeated on
 a second channel, and a `funding_pubkey` may change with a splice. A
-multi-signer node checks a claimed secret against the point
-rather than producing the secret to compare, because producing it would reveal
-the secret of a commitment it has not revoked to whichever signer combines it,
-which is what the option exists to prevent; the peer chooses which number it
-claims. For the same reason, no smaller group of signers than the one that can
-revoke may learn a secret, or choose it, while it is generated, and each signer
-checks for itself that the peer has signed the next commitment before it
-releases its part of a secret, and then refuses to sign the revoked one:
-otherwise a single compromised signer, acting as the one that coordinates the
-others, could collect the secret of the commitment the node can still
-broadcast.
+multi-signer node checks a claimed secret against the point rather than
+producing the secret to compare, because producing it would reveal the secret
+of a commitment it has not revoked to whichever signer combines it, which is
+what the option exists to prevent; the peer chooses which number it claims. A
+point that fewer signers than make up a secret could change would undo that
+check: a made-up claim could be made to match it, leaving the node unable to
+close the channel on its own, or a true claim made to fail, which after a
+restore leads the node to try to broadcast a revoked commitment, though its
+signers' records then stop it. For the same reason, no smaller group of signers
+than the one whose parts make up a secret may learn it, or choose it, while it
+is generated.
+
+That alone does not stop a compromised signer, acting as the one that
+coordinates the others, from collecting both the secret of a commitment and a
+signature with which the node can broadcast that commitment, which hands the
+channel to the peer. The requirements state that outcome rather than a
+protocol, because the ways to it are many: the coordinator could have the
+commitment signed first, saying that the peer has stopped responding, and have
+it revoked afterwards, or revoke a later number instead to make it look
+revoked; where fewer than all signers are needed to sign, it could have it
+revoked by some signers and signed by others that never heard of the
+revocation; it could hide a splice from a signer; or it could have the peer
+sign a commitment built on a point whose secret it has handed over, which no
+check of the peer's signatures alone would notice. Hence the way of meeting it
+listed with the requirements: each signer checks for itself what it signs and
+what it revokes, and every signer that could sign has recorded a revocation
+before any part of the secret is released. Every signer then has to be
+reachable for the channel to advance. A node that had only the signers whose
+parts make up a secret record a revocation would be protected only against
+fewer compromised signers than every such group has in common with every group
+that can sign: for t of n signers making up a secret and s of n signing, fewer
+than t + s - n, which for 2-of-3 means not even one. Each signer also keeps the
+peer's signatures for the next commitment, its HTLC signatures included, before
+it helps revoke the current one, so that a coordinator cannot leave the node
+without a next commitment it can broadcast, or without the HTLC transactions it
+needs to claim an HTLC in time.
 
 The option is a `channel_type` add-on rather than a node-wide flag, so it is
 agreed per channel, and a channel's rules never change after it opens. Feature
@@ -1260,7 +1368,11 @@ multi-signer node. A signer that knows another signer's secret nonce, and sees
 that signer's partial signature, can compute that signer's key share. Nonces
 derived from a seed that one signer holds would therefore hand that signer the
 other shares, the same weakness the shachain has for revocation secrets, and a
-nonce used for two different messages gives away the key in the same way.
+nonce used for two different messages gives away the key in the same way,
+whether it is the node's whole nonce or one signer's share of it. Since a
+verification nonce is persisted, and a coordinator could ask for a second
+signature with it, each signer keeps its own record of the nonce shares it has
+used.
 
 The idea was first proposed by ZmnSCPxj on Delving Bitcoin as
 `no_more_shachains` (option 2A in his

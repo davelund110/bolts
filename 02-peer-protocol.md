@@ -3616,8 +3616,12 @@ A node:
       - if it cannot check only for now (for example, while some of its
         signers are unreachable):
         - MUST NOT broadcast its commitment transaction, fail the channel,
-          or send an `error`, for any reason (including the
-          `next_revocation_number` requirements above), until it can check.
+          or send an `error`, for any reason, until it can check: this
+          includes the `next_revocation_number` requirements above, an
+          `error` it receives, and an HTLC reaching its deadline (it accepts
+          that loss rather than risk broadcasting a revoked commitment).
+          It still handles any commitment transaction its peer broadcasts,
+          as [BOLT #5](05-onchain.md) requires.
         - SHOULD close the connection, and reconnect once it can check.
       - otherwise, if `next_revocation_number` is greater than expected
         above (a node meeting the requirements of
