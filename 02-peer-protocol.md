@@ -3613,29 +3613,50 @@ A node:
   - otherwise:
     - if `option_independent_secrets` applies to the channel, AND it cannot
       check whether `your_last_per_commitment_secret` is correct:
-      - if it cannot check only for now (for example, while some of its
-        signers are unreachable):
-        - MUST NOT broadcast its commitment transaction, fail the channel,
-          or send an `error`, for any reason, until it can check: this
-          includes the `next_revocation_number` requirements above, an
-          `error` it receives, and an HTLC reaching its deadline (it accepts
-          that loss rather than risk broadcasting a revoked commitment).
-          It still handles any commitment transaction its peer broadcasts,
-          as [BOLT #5](05-onchain.md) requires.
-        - SHOULD close the connection, and reconnect once it can check.
-      - otherwise, if `next_revocation_number` is greater than expected
-        above (a node meeting the requirements of
-        [BOLT #3](03-transactions.md#independent-per-commitment-secrets) only
-        gets here after losing the means to check for good, such as a
-        signer's share):
-        - MUST NOT broadcast its commitment transaction.
-        - SHOULD send an `error` to request the peer to fail the channel.
+      - if `next_revocation_number` is greater than expected above:
+        - if it cannot check only for now (for example, while some of its
+          signers are unreachable):
+          - unless it takes the multi-signer option below, MUST NOT broadcast
+            its commitment transaction until it can check, whatever would
+            otherwise require it: the `next_commitment_number` and
+            `next_revocation_number` requirements above, an `error` it
+            receives, or an HTLC reaching its deadline (it accepts that loss
+            rather than risk broadcasting a revoked commitment). It still
+            handles any commitment transaction its peer broadcasts, as
+            [BOLT #5](05-onchain.md) requires.
+          - unless it takes the multi-signer option below, SHOULD NOT fail the
+            channel, or send an `error`, until it can check, other than on an
+            `error` it receives.
+          - SHOULD close the connection, and reconnect once it can check.
+        - otherwise (a node meeting the requirements of
+          [BOLT #3](03-transactions.md#independent-per-commitment-secrets)
+          only gets here after losing the means to check for good, such as a
+          signer's share):
+          - MUST NOT broadcast its commitment transaction.
+          - SHOULD send an `error` to request the peer to fail the channel.
+      - otherwise, if it cannot check only for now:
+        - MAY carry on with the channel meanwhile.
+        - SHOULD NOT fail the channel over `your_last_per_commitment_secret`
+          until it can check, and then applies the requirement below on one
+          that does not match the expected values.
       - otherwise:
         - SHOULD send an `error` and fail the channel, since it can no
           longer reveal its per-commitment secrets either.
     - otherwise, if `your_last_per_commitment_secret` does not match the
       expected values:
       - SHOULD send an `error` and fail the channel.
+  - if it meets the requirements of
+    [BOLT #3](03-transactions.md#independent-per-commitment-secrets) for a
+    node whose secrets several signers generate, or whose funding key they
+    hold shares of:
+    - MAY, wherever the requirements above say it MUST NOT broadcast its
+      commitment transaction, including while it cannot check only for now,
+      instead fail the channel, broadcasting the latest commitment
+      transaction it has not revoked that enough of its signers can sign.
+      Its signers sign no commitment transaction they have revoked, whatever
+      the node's own records say, so the requirement of
+      [BOLT #5](05-onchain.md#failing-a-channel) not to broadcast an outdated
+      commitment transaction does not stop it.
 
 A receiving node:
   - if the `next_funding` TLV is set:
