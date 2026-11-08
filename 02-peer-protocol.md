@@ -3624,39 +3624,51 @@ A node:
             rather than risk broadcasting a revoked commitment). It still
             handles any commitment transaction its peer broadcasts, as
             [BOLT #5](05-onchain.md) requires.
-          - unless it takes the multi-signer option below, SHOULD NOT fail the
-            channel, or send an `error`, until it can check, other than on an
-            `error` it receives.
-          - SHOULD close the connection, and reconnect once it can check.
+          - MUST keep the `next_revocation_number` and
+            `your_last_per_commitment_secret` it received, even if it fails the
+            channel meanwhile, and check them once it can:
+            - if `your_last_per_commitment_secret` is correct for that
+              `next_revocation_number` minus 1:
+              - MUST NOT broadcast its commitment transaction, as above.
+            - otherwise:
+              - SHOULD fail the channel, if it has not already, and broadcast
+                its latest commitment transaction.
         - otherwise (a node meeting the requirements of
           [BOLT #3](03-transactions.md#independent-per-commitment-secrets)
           only gets here after losing the means to check for good, such as a
           signer's share):
           - MUST NOT broadcast its commitment transaction.
           - SHOULD send an `error` to request the peer to fail the channel.
-      - otherwise, if it cannot check only for now:
+      - otherwise, if `next_revocation_number` is one the requirements above
+        expect, AND it cannot check only for now:
         - MAY carry on with the channel meanwhile.
         - SHOULD NOT fail the channel over `your_last_per_commitment_secret`
           until it can check, and then applies the requirement below on one
           that does not match the expected values.
-      - otherwise:
+      - otherwise, if it cannot check for good:
         - SHOULD send an `error` and fail the channel, since it can no
           longer reveal its per-commitment secrets either.
     - otherwise, if `your_last_per_commitment_secret` does not match the
       expected values:
       - SHOULD send an `error` and fail the channel.
-  - if it meets the requirements of
+  - if `option_independent_secrets` applies to the channel, AND it meets the
+    requirements of
     [BOLT #3](03-transactions.md#independent-per-commitment-secrets) for a
     node whose secrets several signers generate, or whose funding key they
     hold shares of:
-    - MAY, wherever the requirements above say it MUST NOT broadcast its
+    - MAY, wherever the requirements above for a node that cannot check
+      `your_last_per_commitment_secret` say it MUST NOT broadcast its
       commitment transaction, including while it cannot check only for now,
       instead fail the channel, broadcasting the latest commitment
       transaction it has not revoked that enough of its signers can sign.
-      Its signers sign no commitment transaction they have revoked, whatever
-      the node's own records say, so the requirement of
-      [BOLT #5](05-onchain.md#failing-a-channel) not to broadcast an outdated
-      commitment transaction does not stop it.
+      Its signers keep their records of what they have revoked where a
+      restore cannot roll them back, and sign no commitment transaction they
+      have revoked, whatever the node's own records say, so the requirement
+      of [BOLT #5](05-onchain.md#failing-a-channel) not to broadcast an
+      outdated commitment transaction does not stop it.
+    - MUST NOT do so once it has found `your_last_per_commitment_secret`
+      correct for a `next_revocation_number` greater than expected: it has
+      then fallen behind, and the requirements above for that case apply.
 
 A receiving node:
   - if the `next_funding` TLV is set:

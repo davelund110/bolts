@@ -979,8 +979,8 @@ A node:
     - MUST set bit 267 in `init` and `node_announcement`, since it cannot
       open a channel without the option.
   - otherwise:
-    - SHOULD set bit 267 in `init` and `node_announcement`, so that a peer
-      that generates its secrets jointly can open channels with it.
+    - MAY set bit 267 in `init` and `node_announcement`, so that a peer that
+      generates its secrets jointly can open channels with it.
   - if both peers set `option_independent_secrets`:
     - SHOULD include it in the `channel_type` it proposes, so that a peer that
       does not generate its per-commitment secrets with the algorithm above can
@@ -1075,6 +1075,10 @@ A node generating its per-commitment secrets on a channel with
         can broadcast on every funding output that a commitment transaction of
         the node can still spend. A signer that has lost its records counts as
         one that cannot sign.
+    - MUST have each signer keep its records of the commitment transactions
+      it has helped revoke or sign where restoring the signer, or the whole
+      node, from a backup cannot roll them back: a signer restored without
+      its latest records counts as one that has lost them.
     - MUST generate each secret, and compute its per-commitment point, such
       that no group of signers smaller than the one whose parts make up the
       secret learns or chooses it before the node revokes that commitment; and
@@ -1083,8 +1087,9 @@ A node generating its per-commitment secrets on a channel with
       the one whose parts make up the secret can change it: for example, with
       `t` signers' parts making up a secret and at least `2t - 1` signers,
       from one share of the point from each of at least `2t - 1` signers, each
-      signed by the signer it comes from and the same on every attempt,
-      stopping if
+      signed by the signer it comes from together with a value unique to the
+      channel and the commitment number, so that it cannot be replayed for
+      another commitment, and the same on every attempt, stopping if
       the shares do not all lie on one polynomial of degree `t - 1`, whose
       value at zero is the point.
     - MUST NOT check `your_last_per_commitment_secret` by producing the
@@ -1093,9 +1098,10 @@ A node generating its per-commitment secrets on a channel with
       highest whose per-commitment point it has sent as one it has not
       reached, and the secret claimed for it as incorrect, if it records that
       number before it sends each point.
-    - MUST NOT have a splice transaction signed whose new funding key is held
-      by any signers other than those that held the funding key it replaces,
-      or needs fewer of them to sign than the funding key it replaces.
+    - MUST NOT have a splice transaction signed unless its new funding key is
+      held by exactly the signers that held the funding key it replaces, all
+      of them, with a threshold (the number of them needed to sign) at least
+      that of the funding key it replaces.
     - once it cannot revoke one of its commitment transactions (for example,
       because a signer has helped sign it, or is lost for good), SHOULD fail
       the channel, broadcasting the latest commitment transaction it has not
@@ -1110,24 +1116,28 @@ funds by losing its peer's secrets, or by having a closing transaction signed
 while the channel goes on, neither of which depends on the option.
 
 A node whose secrets several signers generate, or whose funding key they hold
-shares of, sends `splice_locked`, or `my_current_funding_locked` for a splice
-transaction, only once its signers have seen the splice transaction confirmed
-at a depth they treat as final, even with `option_zeroconf`, rather than as
-soon as `tx_signatures` have been exchanged as
-[BOLT #2](02-peer-protocol.md#the-splice_locked-message) recommends. Once both
-sides have sent `splice_locked`, the peer signs no more commitment
-transactions on any other funding output, the one the splice spends and RBF
-attempts included. While a commitment transaction of the node could still
-spend one of those, for example because the splice transaction may never
-confirm, the node could not revoke a commitment without leaving itself with
-none it has not revoked on that output; so had it sent `splice_locked`
-earlier, it could not have advanced the channel before then anyway, and
-waiting costs nothing. Likewise, where the funding transaction had RBF attempts,
-the peer signs nothing on the other attempts' outputs after `channel_ready`,
-and a reorganization deeper than `minimum_depth` could still confirm one of
-them, so such a node sends `channel_ready` only once its signers have seen the
-funding transaction confirmed at a depth they treat as final. With a single
-funding transaction there is nothing else to confirm, and it need not wait.
+shares of:
+  - MUST NOT send `splice_locked`, or `my_current_funding_locked` for a splice
+    transaction, until its signers have seen the splice transaction confirmed
+    at a depth they treat as final, even with `option_zeroconf`, rather than as
+    soon as `tx_signatures` have been exchanged as
+    [BOLT #2](02-peer-protocol.md#the-splice_locked-message) recommends.
+  - if the funding transaction had RBF attempts:
+    - MUST NOT send `channel_ready` until its signers have seen the funding
+      transaction confirmed at a depth they treat as final.
+
+Both follow from the outcome above. Once both sides have sent `splice_locked`,
+the peer signs no more commitment transactions on any other funding output, the
+one the splice spends and RBF attempts included. While a commitment transaction
+of the node could still spend one of those, for example because the splice
+transaction may never confirm, the node could not revoke a commitment without
+leaving itself with none it has not revoked on that output; so had it sent
+`splice_locked` earlier, it could not have advanced the channel before then
+anyway, and waiting costs nothing. Likewise, where the funding transaction had
+RBF attempts, the peer signs nothing on the other attempts' outputs after
+`channel_ready`, and a reorganization deeper than `minimum_depth` could still
+confirm one of them. With a single funding transaction there is nothing else to
+confirm, and the node need not wait.
 
 A node receiving per-commitment secrets on a channel with
 `option_independent_secrets`:
@@ -1318,21 +1328,29 @@ The reconnection rules in
 rule for a node that cannot check, which protects its funds from a
 penalty at the cost of relying on its peer. A node that cannot check only for
 now, for example while some of its signers are unreachable, does better to
-wait and reconnect than to take that rule, and must not broadcast its
+wait until it can check than to take that rule, and must not broadcast its
 commitment transaction meanwhile, since it cannot yet tell whether that
 commitment has been revoked; but only when its peer claims a later state than
-it expects. Otherwise the claim gives no reason to think the node is behind,
-and holding back would only stall it, at every reconnection while a signer is
-unreachable, so it carries on and waits only to fail the channel over a claim
-that does not match. A node that meets the multi-signer requirements may
-instead fail the channel wherever those rules say not to broadcast, even while
-it cannot yet check, broadcasting the latest commitment transaction it has not
-revoked that enough of its signers can sign: its signers sign no revoked one,
-whatever the node's own records say, so it needs neither the check nor up to
-date records to broadcast safely. Otherwise a peer could hold its funds with a
-made-up claim once it has lost a signer's share for good, or with a true one
-after a restore, and it would have to let HTLCs expire while a signer is
-unreachable. Losing what generates the
+it expects. It keeps the claim and checks it once it can, even if it has
+failed the channel meanwhile (it must, on an `error` from its peer), so that a
+peer cannot make up a claim and then leave the node relying on it to close: a
+claim that turns out false means its latest commitment was never revoked, and
+it can broadcast it. When the peer claims the state the node expects, the
+claim gives no reason to think the node is behind, and holding back would only
+stall it, at every reconnection while a signer is unreachable, so it carries
+on and waits only to fail the channel over a claim that does not match. A
+claim of an earlier state than expected is handled as without the option. A
+node that meets the multi-signer requirements may instead fail the channel
+wherever those rules say not to broadcast, even while it cannot yet check,
+broadcasting the latest commitment transaction it has not revoked that enough
+of its signers can sign: its signers keep their records where a restore cannot
+roll them back, and sign no revoked one whatever the node's own records say,
+so it needs neither the check nor up to date records to broadcast safely.
+Otherwise a peer could hold its funds with a made-up claim once it has lost a
+signer's share for good, or with a true one after a restore, and it would have
+to let HTLCs expire while a signer is unreachable. A node that has found a true
+claim of a later state has fallen behind, and does not broadcast, as without
+the option. Losing what generates the
 secrets, such as a signer's share, is still as serious as losing the funding
 key.
 
@@ -1388,11 +1406,13 @@ commitment it can broadcast, or without the HTLC transactions it needs to claim
 an HTLC in time, and has to keep the same one as the other signers, since
 signers shown different transactions with that number could each help revoke
 the current one while too few of them hold any one of those transactions to
-sign it. A splice to a funding key that other signers hold would hand the
-channel's funds to them, outside every requirement here, and one that needs
+sign it. The requirements are stated for one group of signers, fixed for the
+channel's life. A splice to a funding key that other signers hold would hand
+the channel's funds to them, outside every requirement here; one that needs
 fewer of the signers to sign would lower that bound for the rest of the
-channel. So a node cannot splice out a signer it has lost or no longer trusts:
-it has to close the channel and open another.
+channel; and one held by only some of them would let those drop a signer that
+refuses to sign. So a node cannot splice out a signer it has lost or no longer
+trusts: it has to close the channel and open another.
 
 The option is a `channel_type` add-on rather than a node-wide flag, so it is
 agreed per channel, and a channel's rules never change after it opens: a node
