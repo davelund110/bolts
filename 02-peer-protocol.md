@@ -3630,6 +3630,8 @@ A node:
             - if `your_last_per_commitment_secret` is correct for that
               `next_revocation_number` minus 1:
               - MUST NOT broadcast its commitment transaction, as above.
+              - SHOULD send an `error` to request the peer to fail the
+                channel, as above, if it has not failed it already.
             - otherwise:
               - SHOULD fail the channel, if it has not already, and broadcast
                 its latest commitment transaction.

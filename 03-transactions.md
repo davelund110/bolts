@@ -1053,7 +1053,8 @@ A node generating its per-commitment secrets on a channel with
     later secret.
   - MUST be able to check `your_last_per_commitment_secret` in
     `channel_reestablish` for any commitment number, including after being
-    restored from an old backup. It MAY do so by checking that the secret
+    restored from an old backup, other than as the record of the highest
+    point sent, below, allows. It MAY do so by checking that the secret
     generates the per-commitment point of that commitment number, rather than
     by producing the secret.
   - SHOULD keep whatever it needs to reveal and check its secrets at least as
@@ -1097,7 +1098,10 @@ A node generating its per-commitment secrets on a channel with
       commitment number. It MAY also treat a commitment number above the
       highest whose per-commitment point it has sent as one it has not
       reached, and the secret claimed for it as incorrect, if it records that
-      number before it sends each point.
+      number before it sends each point. That record may be out of date after
+      a restore, so a node that has judged a claim incorrect from it MUST NOT
+      broadcast any commitment transaction but the latest it has not revoked
+      that enough of its signers can sign.
     - MUST NOT have a splice transaction signed unless its new funding key is
       held by exactly the signers that held the funding key it replaces, all
       of them, with a threshold (the number of them needed to sign) at least
@@ -1117,11 +1121,12 @@ while the channel goes on, neither of which depends on the option.
 
 A node whose secrets several signers generate, or whose funding key they hold
 shares of:
-  - MUST NOT send `splice_locked`, or `my_current_funding_locked` for a splice
-    transaction, until its signers have seen the splice transaction confirmed
-    at a depth they treat as final, even with `option_zeroconf`, rather than as
-    soon as `tx_signatures` have been exchanged as
-    [BOLT #2](02-peer-protocol.md#the-splice_locked-message) recommends.
+  - MUST treat no depth as acceptable for a splice transaction, in
+    [BOLT #2](02-peer-protocol.md#the-splice_locked-message)'s requirements to
+    send `splice_locked` and `my_current_funding_locked`, until its signers
+    have seen it confirmed at a depth they treat as final, and so MUST NOT send
+    either for it before then, even with `option_zeroconf`, rather than as soon
+    as `tx_signatures` have been exchanged as BOLT 2 recommends.
   - if the funding transaction had RBF attempts:
     - MUST NOT send `channel_ready` until its signers have seen the funding
       transaction confirmed at a depth they treat as final.
