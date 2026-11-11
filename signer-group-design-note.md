@@ -104,6 +104,18 @@ For every set A of K − 1 signers there is one key k_A, held by the N − K + 1
 signers outside A. There are C(N, K − 1) such keys: 3 for 2-of-3, 4 for
 2-of-4, 10 for 3-of-5, 35 for 4-of-7. So this is for small groups.
 
+For 2-of-3, each set A is one signer, and its key is held by the other two:
+
+| Key  | Held by          | Missing from |
+|------|------------------|--------------|
+| k_1  | signers 2 and 3  | signer 1     |
+| k_2  | signers 1 and 3  | signer 2     |
+| k_3  | signers 1 and 2  | signer 3     |
+
+Each signer lacks one key, so it can't work out a secret
+s_n = v_1 + v_2 + v_3 by itself (v_i is the term under k_i, section 3),
+while any two signers between them hold all three keys.
+
 Each key is made once per signer set by its holders alone: each holder
 contributes randomness, encrypted to the other holders, and the key is a
 hash of all the holders' contributions. Every two holders of a key then
@@ -318,6 +330,28 @@ received the peer's `commitment_signed` for n + 1:
    output.
 3. **Release.** Every signer checks every signer's revocation statement,
    then releases its share of s_n, signed.
+
+```mermaid
+sequenceDiagram
+    participant P as Peer
+    participant C as Coordinator
+    participant S as Every signer (all N)
+    P->>C: commitment_signed for n + 1
+    C->>S: commitment n + 1, with the peer's signatures
+    Note over S: 1. Hold: check n + 1 on every live output,<br/>record the version held
+    S->>C: signed hold statements
+    C->>S: every signer's hold statement
+    Note over S: 2. Record: same outputs and versions in all?<br/>Then record n as revoked
+    S->>C: signed revocation statements
+    C->>S: every signer's revocation statement
+    Note over S: 3. Release: only once all N are in
+    S->>C: signed shares of s_n
+    Note over C: any K shares, each checked<br/>against its signed point, give s_n
+    C->>P: revoke_and_ack with s_n
+```
+
+A signer whose check fails goes no further, so no share leaves until
+every signer has recorded the revocation.
 
 Each signer checks every statement itself; the coordinator only carries
 them. So three exchanges among the signers per `revoke_and_ack`. A signer
