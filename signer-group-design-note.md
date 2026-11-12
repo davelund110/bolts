@@ -516,15 +516,19 @@ something the protocol can make up for:
 - other signers keep the highest value each signer has sent them;
 - a signer sends no reply that depends on a write until every other signer
   it can reach has acknowledged that write's counter, and at least one has;
+  and none in a revocation, which needs every signer anyway, until every
+  other one has;
 - at start, a signer asks every other signer for the highest value it has
   of its counter, waits for all of them, and takes the highest. A higher
   one than its own means it was rolled back: it marks every channel as
   restored.
 
 A forged higher value can't be made, since it is signed by the signer
-itself. But a write that only a colluding signer has acknowledged can be
-hidden by it, so detection alone doesn't meet the BOLT 3 requirement; it
-only backs up storage that can't be rolled back.
+itself. A revocation's writes have been seen by at least K other signers,
+so by one that isn't colluding. But a close or a signature can go on with
+only K signers up, so its write may have been seen only by colluding ones,
+which can hide it. Detection alone therefore doesn't meet the BOLT 3
+requirement; it only backs up storage that can't be rolled back.
 
 ## 9. Splices
 
