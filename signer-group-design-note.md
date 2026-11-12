@@ -278,12 +278,21 @@ holds the channel, it has lost its records for it and does only what
 section 7 allows. If neither does, it does nothing for the channel at all,
 whatever the coordinator shows it.
 
-0. At channel open, for each funding attempt, it signs nothing (the peer's
-   commitment 0 on that attempt's output, or the node's inputs to that
-   attempt) until it holds our commitment 0 on that output and every signer
-   has signed a hold statement naming the same version of it. An attempt
-   the node signs nothing on carries none of its funds, except what the
-   peer may push to it.
+0. At channel open, for each funding attempt, it signs none of the node's
+   inputs to that attempt until it holds our commitment 0 on that
+   attempt's output and every signer has signed a hold statement naming
+   the same version of it. Where the node's inputs are signed outside the
+   signers, the node sends no `tx_signatures` and broadcasts no funding
+   transaction before then; the signers can't enforce that, so there it
+   rests on whatever signs those inputs, as the inputs themselves do. On
+   an attempt only the peer funds, it signs the peer's commitment 0 only
+   then too: that signature (`funding_signed` in a v1 open, our
+   `commitment_signed` in a v2 one) is what completes the open for the
+   peer, and in a v1 open commitment 0 already holds whatever the peer
+   pushes to the node. Where the node funds a v1 open, BOLT 2 has it sign
+   the peer's commitment 0 (in `funding_created`) before the peer signs
+   ours; that signature carries none of the node's funds until its inputs
+   are signed.
 1. It holds a version of commitment n only for n above its highest revoked,
    and one version per number and live funding output.
 2. It records n as revoked only right after the last one it recorded, only
@@ -406,15 +415,17 @@ all.
 recorded as revoked by any honest signer: every signer named the same version
 of n + 1, on the same set of outputs, before that; every honest signer with
 its records still holds it there, and none has revoked n + 1. Before any
-revocation, the same holds for commitment 0, by rule 0. So the honest signers
-with their records are willing to sign that version, and with N ≥ 2K − 1 and
-no honest signer restored there are at least K of them (section 7 covers
-restored ones). For them to be able to, the signing scheme must let any K
-signers complete it: with MuSig2, a nonce that any group of K can complete
-(section 10); with threshold ECDSA, presignatures made when needed by
-whichever K are available, or one ready for every group of K. A newer
-commitment that the peer has signed but the node hasn't yet revoked past may
-or may not be signable (rule 4); the node falls back to the one before it.
+revocation, the same holds for commitment 0, by rule 0 (where the node's
+inputs are signed outside the signers, as long as what signs them keeps to
+it). So the honest signers with their records are willing to sign that
+version, and with N ≥ 2K − 1 and no honest signer restored there are at least
+K of them (section 7 covers restored ones). For them to be able to, the
+signing scheme must let any K signers complete it: with MuSig2, a nonce that
+any group of K can complete (section 10); with threshold ECDSA, presignatures
+made when needed by whichever K are available, or one ready for every group
+of K. A newer commitment that the peer has signed but the node hasn't yet
+revoked past may or may not be signable (rule 4); the node falls back to the
+one before it.
 
 An honest signer goes by its own records, so a colluding signer can't stop
 a close while at least K signers outside the colluders still have their
@@ -453,10 +464,13 @@ had itself revoked before it lost its records; that is safe, since the
 answering signer will now never revoke it, so its secret is never released.
 
 This path adds nothing against colluders: K answering signers with their
-records could sign by themselves. It helps when there are fewer than K of
-those, because others are restored or offline, and only with a signing
-scheme a restored signer can take part in: threshold-ECDSA presignatures
-made when needed, not MuSig2 nonces committed to the peer beforehand.
+records could sign by themselves. It helps only when fewer than K of those
+can still sign by the time the close is signed, because some went offline
+after answering (an answer binds its signer for good, rule 5), and only
+with a signing scheme a restored signer can take part in: threshold-ECDSA
+presignatures made when needed, not MuSig2 nonces committed to the peer
+beforehand. An implementation may leave it out: a restored signer then
+counts only as one that can't sign.
 
 The node can't revoke without the restored signer, so it closes the channel.
 For the outcome of BOLT 3, a restored signer counts as one that can't sign,
