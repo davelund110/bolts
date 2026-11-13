@@ -385,6 +385,22 @@ only one version per number and output (rule 1), signers shown different
 versions just can't agree, and n stays unrevoked, so the node can still
 broadcast n.
 
+**After a reconnection.** BOLT 2 has the peer send again, after a
+reconnection, the updates the node didn't acknowledge, and lets them differ
+from the first time: if the node says in `channel_reestablish` that it never
+received commitment n + 1, an honest peer may sign a different version of
+it. A signer that already holds the first refuses the second (rule 1), so
+the channel can't advance and the node closes it. That is safe, but a close
+nobody needed, after a crash at the wrong moment. So the node writes the
+peer's updates and `commitment_signed` durably before it sends commitment
+n + 1 to any signer, and after a restart asks the signers which version of
+n + 1 they hold. If it has n + 1 written, or any signer holds a version of
+it, the node counts n + 1 as received and says so in `channel_reestablish`.
+A signer that doesn't hold it takes it from the node or from a signer that
+does, and checks it itself, with the peer's signatures, as in step 1. If
+signers hold different versions, the peer signed two, and n stays unrevoked
+as above.
+
 **Why every signer's statement before any release.** The K − 1 colluders
 hold K − 1 shares between them, so one honest share completes the secret.
 
