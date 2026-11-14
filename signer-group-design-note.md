@@ -578,7 +578,11 @@ from every signer that it has not helped sign that splice and never will.
 A signer says so only if its records show it hasn't signed it (rule 7),
 records the promise first, and never says so once restored (section 7).
 The set includes every honest signer, so the splice can't then be
-completed. Until then, the channel waits.
+completed. Until then, the channel waits. A signer that doesn't count the
+output as live (it missed the splice's terms while others took them, or
+stopped counting it on an earlier set of promises) says so too, and records
+that it will never count that output as live; otherwise one signer that
+missed a splice's terms would leave the others unable to drop it.
 
 Signers that treat different depths as final may for a while count
 different outputs as live; their hold statements then don't agree, and the
