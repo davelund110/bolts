@@ -1104,8 +1104,8 @@ A node generating its per-commitment secrets on a channel with
       that enough of its signers can sign.
     - MUST NOT have a splice transaction signed unless its new funding key is
       held by exactly the signers that held the funding key it replaces, all
-      of them, with a threshold (the number of them needed to sign) at least
-      that of the funding key it replaces.
+      of them, with the same threshold (the number of them needed to sign) as
+      the funding key it replaces.
     - once it cannot revoke one of its commitment transactions (for example,
       because a signer has helped sign it, or is lost for good), SHOULD fail
       the channel, broadcasting the latest commitment transaction it has not
@@ -1415,9 +1415,10 @@ sign it. The requirements are stated for one group of signers, fixed for the
 channel's life. A splice to a funding key that other signers hold would hand
 the channel's funds to them, outside every requirement here; one that needs
 fewer of the signers to sign would lower that bound for the rest of the
-channel; and one held by only some of them would let those drop a signer that
-refuses to sign. So a node cannot splice out a signer it has lost or no longer
-trusts: it has to close the channel and open another.
+channel; one that needs more of them would let fewer of them stop the node
+signing at all, a close included; and one held by only some of them would let
+those drop a signer that refuses to sign. So a node cannot splice out a signer
+it has lost or no longer trusts: it has to close the channel and open another.
 
 The option is a `channel_type` add-on rather than a node-wide flag, so it is
 agreed per channel, and a channel's rules never change after it opens: a node
