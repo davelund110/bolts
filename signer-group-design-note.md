@@ -553,8 +553,7 @@ output. Its funding key must be held by exactly the same signers as the key
 it replaces, with the same threshold K. A key held by other signers would
 hand them the funds, outside every requirement here; a lower threshold
 would lower the bound for the rest of the channel; a higher one, K′, would
-let the K − 1 colluders block a close unless N ≥ K + K′ − 1 (BOLT 3 allows
-a higher one, and its outcome then needs that larger N); and a key held by
+let the K − 1 colluders block a close unless N ≥ K + K′ − 1; and a key held by
 only some of them would let those drop a signer that refuses to sign. So a node
 can't splice out a signer it has lost or no longer trusts: it closes the
 channel and opens another. Each signer checks this itself, before it helps
@@ -730,7 +729,7 @@ here the peer chooses the tweaks, so the loss needs its own analysis. See
 | Check `your_last_per_commitment_secret` for any number, after a restore too, against the point, never by producing the secret | Section 3; with fewer than 2K − 1 signers reachable, the node can't check for now, or for good if too many are lost |
 | The outcome: no smaller group gets a secret and a signature, a revoked broadcast, or leaves the node without a commitment it has not revoked to broadcast | The rules of section 4; every signer records before any release (section 5); one version per output, every signer's statements covering the same outputs (sections 4, 5 and 9); and a signing scheme any K can complete, stated as a requirement on the scheme, which is open (sections 6 and 10) |
 | Each signer's records kept where a restore can't roll them back; a signer that has lost them counts as one that can't sign | Section 8, as a requirement on deployment; detection only as a second line. Section 7 |
-| A splice keeps exactly the same signers, at no lower threshold | Section 9: the same signers and the same threshold |
+| A splice keeps exactly the same signers, with the same threshold | Section 9: the same signers and the same threshold |
 | No `splice_locked`, and after RBF attempts no `channel_ready`, before final | Section 9 |
 | A node that can't revoke fails the channel, broadcasting the latest commitment it hasn't revoked that enough signers can sign, as `channel_reestablish` allows | Sections 6 and 7 |
 | BOLT 2: keep the claim and check it once able; a multi-signer node may fail the channel and broadcast where it can't check, but not once it has found a claim of a later state true; BOLT 5 points to that | Section 6: it takes the option, keeps and rechecks the claim, broadcasts only what its signers will sign, and nothing once a later state is proven |
